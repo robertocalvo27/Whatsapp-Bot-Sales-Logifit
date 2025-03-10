@@ -8,9 +8,11 @@
     "dev": "nodemon src/index.js",
     "test:campaign": "node test-campaign-flow.js",
     "test:whatsapp": "node test-whatsapp-flow.js",
-    "test:connection": "node test-whatsapp-connection.js"
+    "test:connection": "node test-whatsapp-connection.js",
+    "test:simple": "node test-simple-connection.js"
   },
   "dependencies": {
+    "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^6.7.16",
     "axios": "^1.6.2",
     "crypto": "^1.0.1",
