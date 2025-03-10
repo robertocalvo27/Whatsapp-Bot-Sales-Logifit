@@ -20,6 +20,11 @@ if (!fs.existsSync(AUTH_FOLDER)) {
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 
+// Almacenar los mensajes procesados para evitar duplicados
+const processedMessages = new Set();
+// Tiempo máximo para considerar un mensaje como reciente (15 minutos en milisegundos)
+const MESSAGE_FRESHNESS_THRESHOLD = 15 * 60 * 1000;
+
 // Crear socket de WhatsApp
 async function connectToWhatsApp() {
   try {
@@ -83,12 +88,43 @@ async function connectToWhatsApp() {
     });
     
     // Manejar mensajes entrantes
-    sock.ev.on('messages.upsert', async ({ messages }) => {
+    sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      // Solo procesar mensajes nuevos, no historial
+      if (type !== 'notify') {
+        console.log(`Ignorando mensajes de tipo: ${type} (no son nuevos mensajes)`);
+        return;
+      }
+      
       for (const message of messages) {
         // Ignorar mensajes de estado y propios
         if (message.key.remoteJid === 'status@broadcast' || message.key.fromMe) continue;
         
+        // Verificar si el mensaje ya fue procesado (evitar duplicados)
+        const messageId = message.key.id;
+        if (processedMessages.has(messageId)) {
+          console.log(`Mensaje ${messageId} ya procesado, ignorando.`);
+          continue;
+        }
+        
+        // Verificar si el mensaje es reciente
+        const messageTimestamp = message.messageTimestamp * 1000; // Convertir a milisegundos
+        const currentTime = Date.now();
+        const messageAge = currentTime - messageTimestamp;
+        
+        if (messageAge > MESSAGE_FRESHNESS_THRESHOLD) {
+          console.log(`Ignorando mensaje antiguo (${Math.round(messageAge/1000/60)} minutos de antigüedad)`);
+          continue;
+        }
+        
         try {
+          // Marcar mensaje como procesado
+          processedMessages.add(messageId);
+          // Limitar el tamaño del conjunto para evitar consumo excesivo de memoria
+          if (processedMessages.size > 1000) {
+            const iterator = processedMessages.values();
+            processedMessages.delete(iterator.next().value);
+          }
+          
           // Extraer información del mensaje
           const remoteJid = message.key.remoteJid;
           const from = remoteJid.split('@')[0];

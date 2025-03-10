@@ -4,6 +4,11 @@ const { sendProspectToCRM, updateProspectInCRM } = require('./services/crmServic
 const logger = require('./utils/logger');
 const db = require('./database');
 
+// Almacenamiento en memoria como respaldo cuando MongoDB no está disponible
+const memoryStorage = {
+  prospects: new Map()
+};
+
 /**
  * Maneja un mensaje entrante de WhatsApp
  * @param {Object} message - Mensaje de WhatsApp
@@ -109,12 +114,23 @@ function normalizePhoneNumber(phoneNumber) {
  */
 async function getProspectState(phoneNumber) {
   try {
-    // Buscar en la base de datos
-    const prospect = await db.collection('prospects').findOne({ phoneNumber });
+    // Intentar buscar en la base de datos
+    const collection = await db.collection('prospects');
     
-    // Si existe, devolver estado
-    if (prospect) {
-      return prospect;
+    if (collection) {
+      // Si hay conexión a MongoDB, buscar en la base de datos
+      const prospect = await collection.findOne({ phoneNumber });
+      
+      // Si existe, devolver estado
+      if (prospect) {
+        return prospect;
+      }
+    } else {
+      // Si no hay conexión a MongoDB, buscar en memoria
+      console.log('Usando almacenamiento en memoria para buscar prospecto');
+      if (memoryStorage.prospects.has(phoneNumber)) {
+        return memoryStorage.prospects.get(phoneNumber);
+      }
     }
     
     // Si no existe, crear nuevo estado
@@ -124,12 +140,21 @@ async function getProspectState(phoneNumber) {
       lastInteraction: new Date()
     };
     
-    // Guardar en la base de datos
+    // Guardar en la base de datos o en memoria
     try {
-      await db.collection('prospects').insertOne(newProspect);
-      console.log('Nuevo prospecto creado en la base de datos');
+      const collection = await db.collection('prospects');
+      if (collection) {
+        await collection.insertOne(newProspect);
+        console.log('Nuevo prospecto creado en la base de datos');
+      } else {
+        // Guardar en memoria
+        memoryStorage.prospects.set(phoneNumber, newProspect);
+        console.log('Nuevo prospecto creado en memoria');
+      }
     } catch (dbError) {
-      console.warn('No se pudo guardar el prospecto en la base de datos:', dbError.message);
+      // Si falla la base de datos, guardar en memoria
+      memoryStorage.prospects.set(phoneNumber, newProspect);
+      console.warn('No se pudo guardar el prospecto en la base de datos, guardado en memoria:', dbError.message);
     }
     
     return newProspect;
@@ -137,11 +162,21 @@ async function getProspectState(phoneNumber) {
     logger.error(`Error al obtener estado del prospecto ${phoneNumber}:`, error);
     console.error(`Error al obtener estado del prospecto ${phoneNumber}:`, error);
     
+    // Buscar en memoria como último recurso
+    if (memoryStorage.prospects.has(phoneNumber)) {
+      return memoryStorage.prospects.get(phoneNumber);
+    }
+    
     // Devolver estado básico en caso de error
-    return {
+    const basicState = {
       phoneNumber,
       lastInteraction: new Date()
     };
+    
+    // Guardar en memoria
+    memoryStorage.prospects.set(phoneNumber, basicState);
+    
+    return basicState;
   }
 }
 
@@ -153,17 +188,35 @@ async function getProspectState(phoneNumber) {
  */
 async function updateProspectState(phoneNumber, newState) {
   try {
-    // Actualizar en la base de datos
-    await db.collection('prospects').updateOne(
-      { phoneNumber },
-      { $set: newState }
-    );
+    // Actualizar fecha de última interacción
+    newState.lastInteraction = new Date();
+    
+    // Intentar actualizar en la base de datos
+    const collection = await db.collection('prospects');
+    
+    if (collection) {
+      // Si hay conexión a MongoDB, actualizar en la base de datos
+      await collection.updateOne(
+        { phoneNumber },
+        { $set: newState }
+      );
+      console.log('Prospecto actualizado en la base de datos');
+    } else {
+      // Si no hay conexión a MongoDB, actualizar en memoria
+      memoryStorage.prospects.set(phoneNumber, newState);
+      console.log('Prospecto actualizado en memoria');
+    }
     
     return true;
   } catch (error) {
     logger.error(`Error al actualizar estado del prospecto ${phoneNumber}:`, error);
     console.error(`Error al actualizar estado del prospecto ${phoneNumber}:`, error);
-    return false;
+    
+    // Actualizar en memoria como último recurso
+    memoryStorage.prospects.set(phoneNumber, newState);
+    console.log('Prospecto actualizado en memoria (tras error en DB)');
+    
+    return true;
   }
 }
 
