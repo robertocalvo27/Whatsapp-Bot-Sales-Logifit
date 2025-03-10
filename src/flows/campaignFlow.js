@@ -331,14 +331,15 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
 
 Te he enviado una invitación por correo electrónico con los detalles y el enlace para la llamada.
 
-¿Hay algo más en lo que pueda ayudarte?`;
+Por favor, confirma que has recibido la invitación respondiendo "Confirmado" o "Recibido".`;
         
-        // Actualizar estado
+        // Actualizar estado pero mantener en FOLLOW_UP en lugar de COMPLETED
         const newState = {
           ...prospectState,
-          conversationState: this.states.COMPLETED,
+          conversationState: this.states.FOLLOW_UP,
           emails,
           appointmentDetails,
+          appointmentCreated: true, // Marcar que la cita fue creada
           lastInteraction: new Date()
         };
         
@@ -374,6 +375,45 @@ Te he enviado una invitación por correo electrónico con los detalles y el enla
    * @returns {Promise<Object>} - Respuesta y nuevo estado
    */
   async handleFollowUp(prospectState, message) {
+    // Verificar si ya se creó una cita y estamos esperando confirmación
+    if (prospectState.appointmentCreated) {
+      // Verificar si el mensaje es una confirmación
+      const isConfirmation = /confirm|recib|ok|listo|gracias|recibido/i.test(message);
+      
+      if (isConfirmation) {
+        // El cliente ha confirmado la cita
+        const response = `¡Perfecto! Gracias por confirmar. Nos vemos en la reunión el ${prospectState.appointmentDetails.date} a las ${prospectState.appointmentDetails.time}.
+
+Si necesitas hacer algún cambio o tienes alguna pregunta antes de la reunión, no dudes en escribirme.
+
+¡Que tengas un excelente día!`;
+        
+        // Actualizar estado a COMPLETED
+        const newState = {
+          ...prospectState,
+          conversationState: this.states.COMPLETED,
+          confirmationReceived: true,
+          lastInteraction: new Date()
+        };
+        
+        return {
+          response,
+          newState
+        };
+      } else {
+        // El cliente respondió algo diferente a una confirmación
+        const response = `Gracias por tu mensaje. ¿Has recibido la invitación para nuestra reunión programada para el ${prospectState.appointmentDetails.date} a las ${prospectState.appointmentDetails.time}?
+
+Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
+        
+        return {
+          response,
+          newState: prospectState
+        };
+      }
+    }
+    
+    // Comportamiento original para seguimiento sin cita creada
     // Usar OpenAI para generar una respuesta personalizada
     const prompt = `El prospecto ${prospectState.name} ha preguntado: "${message}" sobre nuestro sistema de control de fatiga y somnolencia. 
     Basado en sus respuestas previas: ${JSON.stringify(prospectState.qualificationAnswers)}.
