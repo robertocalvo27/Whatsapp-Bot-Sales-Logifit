@@ -14,9 +14,20 @@ if (!fs.existsSync(AUTH_FOLDER)) {
   fs.mkdirSync(AUTH_FOLDER, { recursive: true });
 }
 
+// Variable para controlar los intentos de reconexión
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 5;
+
 // Crear socket de WhatsApp
 async function connectToWhatsApp() {
   try {
+    // Si hemos excedido los intentos de reconexión, detener
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.error(`\nSe han excedido los intentos de reconexión (${MAX_RECONNECT_ATTEMPTS}). Por favor, verifica tu conexión a internet y reinicia la aplicación.`);
+      console.error('Si el problema persiste, elimina la carpeta auth_info_baileys y vuelve a intentarlo.\n');
+      process.exit(1);
+    }
+    
     // Cargar estado de autenticación
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
     
@@ -24,7 +35,11 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
       printQRInTerminal: true,
       auth: state,
-      logger: pino({ level: 'silent' })
+      logger: pino({ level: 'silent' }),
+      browser: ['Logifit Bot', 'Chrome', '10.0.0'],
+      connectTimeoutMs: 60000, // 60 segundos
+      keepAliveIntervalMs: 25000, // 25 segundos
+      retryRequestDelayMs: 2000 // 2 segundos
     });
     
     // Guardar credenciales cuando se actualicen
@@ -41,19 +56,27 @@ async function connectToWhatsApp() {
       }
       
       if (connection === 'close') {
-        const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
         
-        logger.info('Conexión cerrada debido a:', lastDisconnect?.error?.message || 'Razón desconocida');
+        logger.info(`Conexión cerrada. Código de estado: ${statusCode}. Razón: ${lastDisconnect?.error?.message || 'Desconocida'}`);
         
         if (shouldReconnect) {
-          logger.info('Reconectando...');
-          connectToWhatsApp();
+          reconnectAttempts++;
+          logger.info(`Reconectando... Intento ${reconnectAttempts} de ${MAX_RECONNECT_ATTEMPTS}`);
+          setTimeout(() => connectToWhatsApp(), 5000); // Esperar 5 segundos antes de reconectar
         } else {
           logger.info('Desconectado permanentemente, elimina la carpeta auth_info_baileys para volver a escanear el código QR');
+          console.log('\n===== DESCONECTADO DE WHATSAPP =====\n');
+          console.log('Para volver a conectar, elimina la carpeta auth_info_baileys y reinicia la aplicación.\n');
         }
       } else if (connection === 'open') {
+        // Resetear contador de intentos de reconexión
+        reconnectAttempts = 0;
+        
         logger.info('Conexión establecida con WhatsApp');
         console.log('\n===== BOT DE WHATSAPP CONECTADO Y LISTO =====\n');
+        console.log('El bot está listo para recibir mensajes.\n');
       }
     });
     
@@ -72,6 +95,7 @@ async function connectToWhatsApp() {
           const mediaUrl = await getMediaUrl(message, type, sock);
           
           logger.logWhatsAppMessage('incoming', from, body || '[MEDIA]');
+          console.log(`\nMensaje recibido de ${from}: ${body || '[MEDIA]'}`);
           
           // Procesar mensaje
           const messageData = {
@@ -88,9 +112,11 @@ async function connectToWhatsApp() {
           if (response && response.text) {
             await sock.sendMessage(remoteJid, { text: response.text });
             logger.logWhatsAppMessage('outgoing', from, response.text);
+            console.log(`Respuesta enviada a ${from}: ${response.text.substring(0, 100)}${response.text.length > 100 ? '...' : ''}`);
           }
         } catch (error) {
           logger.error('Error al procesar mensaje:', error);
+          console.error('Error al procesar mensaje:', error);
         }
       }
     });
@@ -99,7 +125,16 @@ async function connectToWhatsApp() {
   } catch (error) {
     logger.error('Error al conectar con WhatsApp:', error);
     console.error('Error al conectar con WhatsApp:', error);
-    throw error;
+    
+    reconnectAttempts++;
+    if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+      logger.info(`Reintentando conexión... Intento ${reconnectAttempts} de ${MAX_RECONNECT_ATTEMPTS}`);
+      console.log(`\nReintentando conexión... Intento ${reconnectAttempts} de ${MAX_RECONNECT_ATTEMPTS}\n`);
+      setTimeout(() => connectToWhatsApp(), 5000); // Esperar 5 segundos antes de reconectar
+    } else {
+      console.error(`\nSe han excedido los intentos de reconexión (${MAX_RECONNECT_ATTEMPTS}). Por favor, verifica tu conexión a internet y reinicia la aplicación.`);
+      process.exit(1);
+    }
   }
 }
 
