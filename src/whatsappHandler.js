@@ -3,6 +3,35 @@ const { processAudioMessage } = require('./services/audioService');
 const { sendProspectToCRM, updateProspectInCRM } = require('./services/crmService');
 const logger = require('./utils/logger');
 const db = require('./database');
+const { parsePhoneNumber } = require('libphonenumber-js');
+const moment = require('moment-timezone');
+
+// Mapeo de países a zonas horarias (simplificado)
+const COUNTRY_TIMEZONE_MAP = {
+  'PE': 'America/Lima',         // Perú
+  'MX': 'America/Mexico_City',  // México
+  'CO': 'America/Bogota',       // Colombia
+  'CL': 'America/Santiago',     // Chile
+  'AR': 'America/Argentina/Buenos_Aires', // Argentina
+  'BR': 'America/Sao_Paulo',    // Brasil
+  'EC': 'America/Guayaquil',    // Ecuador
+  'BO': 'America/La_Paz',       // Bolivia
+  'PY': 'America/Asuncion',     // Paraguay
+  'UY': 'America/Montevideo',   // Uruguay
+  'VE': 'America/Caracas',      // Venezuela
+  'PA': 'America/Panama',       // Panamá
+  'CR': 'America/Costa_Rica',   // Costa Rica
+  'GT': 'America/Guatemala',    // Guatemala
+  'SV': 'America/El_Salvador',  // El Salvador
+  'HN': 'America/Tegucigalpa',  // Honduras
+  'NI': 'America/Managua',      // Nicaragua
+  'DO': 'America/Santo_Domingo', // República Dominicana
+  'US': 'America/New_York',     // Estados Unidos (Este)
+  'CA': 'America/Toronto',      // Canadá (Este)
+  'ES': 'Europe/Madrid',        // España
+  // Añadir más países según sea necesario
+  'DEFAULT': 'America/Lima'     // Zona horaria por defecto
+};
 
 // Almacenamiento en memoria como respaldo cuando MongoDB no está disponible
 const memoryStorage = {
@@ -25,8 +54,24 @@ async function handleWhatsAppMessage(message) {
     // Normalizar número de teléfono (eliminar espacios, guiones, etc.)
     const phoneNumber = normalizePhoneNumber(from);
     
+    // Detectar país y zona horaria
+    const { country, timezone } = detectCountryAndTimezone(phoneNumber);
+    console.log(`País detectado: ${country}, Zona horaria: ${timezone}`);
+    
     // Buscar o crear estado del prospecto
     let prospectState = await getProspectState(phoneNumber);
+    
+    // Añadir información de país y zona horaria si no existe
+    if (!prospectState.country || !prospectState.timezone) {
+      prospectState = {
+        ...prospectState,
+        country,
+        timezone
+      };
+      // Actualizar en base de datos o memoria
+      await updateProspectState(phoneNumber, prospectState);
+    }
+    
     console.log(`Estado actual: ${prospectState.conversationState || 'nuevo'}`);
     
     // Procesar mensaje según su tipo
@@ -105,6 +150,36 @@ async function handleWhatsAppMessage(message) {
 function normalizePhoneNumber(phoneNumber) {
   // Eliminar caracteres no numéricos
   return phoneNumber.replace(/\D/g, '');
+}
+
+/**
+ * Detecta el país y la zona horaria basado en el número de teléfono
+ * @param {string} phoneNumber - Número de teléfono normalizado
+ * @returns {Object} - País y zona horaria
+ */
+function detectCountryAndTimezone(phoneNumber) {
+  try {
+    // Asegurarse de que el número tenga formato internacional (con +)
+    const formattedNumber = phoneNumber.startsWith('+') ? phoneNumber : `+${phoneNumber}`;
+    
+    // Parsear el número para obtener información
+    const parsedNumber = parsePhoneNumber(formattedNumber);
+    
+    if (parsedNumber && parsedNumber.country) {
+      const country = parsedNumber.country;
+      const timezone = COUNTRY_TIMEZONE_MAP[country] || COUNTRY_TIMEZONE_MAP.DEFAULT;
+      
+      return { country, timezone };
+    }
+  } catch (error) {
+    console.error('Error al detectar país del número:', error);
+  }
+  
+  // Valores por defecto si no se puede detectar
+  return { 
+    country: 'UNKNOWN', 
+    timezone: COUNTRY_TIMEZONE_MAP.DEFAULT 
+  };
 }
 
 /**

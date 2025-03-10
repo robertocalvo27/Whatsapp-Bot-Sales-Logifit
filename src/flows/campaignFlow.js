@@ -225,7 +225,7 @@ ${question}`;
     
     if (isPositive) {
       // Sugerir horario cercano
-      const suggestedTime = this.suggestNearestTime();
+      const suggestedTime = this.suggestNearestTime(prospectState.timezone);
       
       const response = `Excelente! ¿Te parece bien hoy a las ${suggestedTime}? Te enviaré el link de Google Meet.`;
       
@@ -291,7 +291,7 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
       };
     } else {
       // No se pudo interpretar el horario
-      const suggestedTime = this.suggestNearestTime();
+      const suggestedTime = this.suggestNearestTime(prospectState.timezone);
       
       const response = `Disculpa, no pude entender el horario. ¿Te parece bien hoy a las ${suggestedTime}? O si prefieres, podemos programarlo para mañana.`;
       
@@ -481,44 +481,52 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
   /**
    * Crea una cita en el calendario
    * @param {Object} prospectState - Estado del prospecto
-   * @param {Array<string>} emails - Correos electrónicos para la invitación
+   * @param {Array<string>} emails - Correos electrónicos
    * @returns {Promise<Object>} - Detalles de la cita
    */
   async createAppointment(prospectState, emails) {
-    // Convertir el tiempo seleccionado a un formato que entienda el servicio de calendario
-    const selectedDateTime = this.parseSelectedTime(prospectState.selectedTime);
-    
-    // Crear evento personalizado
-    const customEvent = {
-      summary: `LOGIFIT - Demo de Control de Fatiga y Somnolencia con ${prospectState.name}`,
-      description: `🚀 ¡Únete a nuestra sesión de Logifit! ✨ Logifit es una moderna herramienta tecnológica inteligente adecuada para la gestión del descanso y salud de los colaboradores. Brindamos servicios de monitoreo preventivo como apoyo a la mejora de la salud y prevención de accidentes, con la finalidad de salvaguardar la vida de los trabajadores y ayudarles a alcanzar el máximo de su productividad en el proyecto.
-      ✨🌟🌞 ¡Tu bienestar es nuestra prioridad! ⚒️👍`,
-      attendees: emails.map(email => ({ email })),
-      startTime: selectedDateTime,
-      duration: 30 // duración en minutos
-    };
-    
-    // Llamar al servicio de calendario
-    return createCalendarEvent(prospectState, customEvent);
+    try {
+      // Obtener la hora seleccionada
+      const selectedTime = prospectState.selectedTime;
+      
+      // Parsear la hora seleccionada
+      const { date, time, dateTime } = this.parseSelectedTime(selectedTime, prospectState.timezone);
+      
+      // Crear evento en Google Calendar
+      const eventDetails = {
+        summary: 'Demostración de Logifit - Sistema de Control de Fatiga',
+        description: `Reunión con ${prospectState.name} para demostración del sistema de control de fatiga y somnolencia de Logifit.`,
+        startDateTime: dateTime,
+        duration: 30, // Duración en minutos
+        attendees: emails.map(email => ({ email })),
+        timeZone: prospectState.timezone || 'America/Lima' // Usar la zona horaria del cliente
+      };
+      
+      await createCalendarEvent(eventDetails);
+      
+      return {
+        date,
+        time,
+        dateTime
+      };
+    } catch (error) {
+      logger.error('Error al crear cita:', error);
+      throw error;
+    }
   }
 
   /**
-   * Identifica la campaña por palabras clave
+   * Identifica la campaña basada en palabras clave
    * @param {string} message - Mensaje recibido
    * @returns {string} - Tipo de campaña
    */
   identifyCampaign(message) {
-    const lowerMessage = message.toLowerCase();
-    
-    if (lowerMessage.includes('facebook') || lowerMessage.includes('fb')) {
-      return 'facebook';
-    } else if (lowerMessage.includes('google') || lowerMessage.includes('ads')) {
-      return 'google_ads';
-    } else if (lowerMessage.includes('web') || lowerMessage.includes('sitio')) {
-      return 'website';
-    } else {
-      return 'unknown';
+    // Implementación básica, se puede mejorar con análisis de texto
+    if (/fatiga|somnolencia|cansancio|accidente|seguridad/i.test(message)) {
+      return 'fatiga';
     }
+    
+    return 'general';
   }
 
   /**
@@ -527,12 +535,20 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
    * @returns {string} - Nombre extraído
    */
   extractName(message) {
-    // Implementación simple, se puede mejorar con NLP
-    const words = message.split(' ');
-    if (words.length >= 2) {
-      return words.slice(0, 2).join(' ');
+    // Implementación básica, se puede mejorar con NLP
+    const words = message.split(/\s+/);
+    if (words.length > 0) {
+      // Tomar la primera palabra que comience con mayúscula
+      for (const word of words) {
+        if (word.length > 2 && /^[A-ZÁÉÍÓÚÑ]/.test(word)) {
+          return word;
+        }
+      }
+      // Si no hay palabras con mayúscula, tomar la primera palabra
+      return words[0];
     }
-    return message;
+    
+    return 'Cliente';
   }
 
   /**
@@ -541,7 +557,6 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
    * @returns {string|null} - RUC extraído o null
    */
   extractRUC(message) {
-    // Buscar patrón de RUC peruano (11 dígitos)
     const rucMatch = message.match(/\b\d{11}\b/);
     return rucMatch ? rucMatch[0] : null;
   }
@@ -552,7 +567,7 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
    * @returns {Array<string>} - Correos electrónicos extraídos
    */
   extractEmails(message) {
-    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+    const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
     return message.match(emailRegex) || [];
   }
 
@@ -563,80 +578,138 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
    */
   isPositiveResponse(message) {
     const positivePatterns = [
-      'si', 'sí', 'claro', 'ok', 'okay', 'vale', 'bueno', 'perfecto', 
-      'genial', 'excelente', 'me parece', 'está bien', 'de acuerdo'
+      /\bs[ií]\b/i,
+      /\bclaro\b/i,
+      /\bpor supuesto\b/i,
+      /\bde acuerdo\b/i,
+      /\bok\b/i,
+      /\bbueno\b/i,
+      /\bexcelente\b/i,
+      /\bperfecto\b/i,
+      /\bme parece bien\b/i
     ];
     
-    const lowerMessage = message.toLowerCase();
-    
-    return positivePatterns.some(pattern => lowerMessage.includes(pattern));
+    return positivePatterns.some(pattern => pattern.test(message));
   }
 
   /**
-   * Sugiere el tiempo más cercano en múltiplos de 30 minutos
-   * @returns {string} - Tiempo sugerido (formato HH:MM)
+   * Sugiere el horario más cercano disponible
+   * @param {string} timezone - Zona horaria del cliente
+   * @returns {string} - Horario sugerido
    */
-  suggestNearestTime() {
-    const now = moment();
-    const minutes = now.minutes();
+  suggestNearestTime(timezone = 'America/Lima') {
+    // Obtener hora actual en la zona horaria del cliente
+    const now = moment().tz(timezone);
     
-    // Redondear a la próxima media hora
-    if (minutes < 30) {
-      now.minutes(30);
-    } else {
-      now.add(1, 'hour').minutes(0);
+    // Redondear a la siguiente hora completa
+    const nextHour = now.clone().add(1, 'hour').startOf('hour');
+    
+    // Si es después de las 17:00, sugerir para el día siguiente a las 10:00
+    if (nextHour.hour() >= 17) {
+      return nextHour.clone().add(1, 'day').hour(10).format('YYYY-MM-DD HH:mm');
     }
     
-    return now.format('HH:mm');
+    // Si es antes de las 9:00, sugerir para las 10:00 del mismo día
+    if (nextHour.hour() < 9) {
+      return nextHour.clone().hour(10).format('YYYY-MM-DD HH:mm');
+    }
+    
+    // En horario laboral, sugerir la siguiente hora disponible
+    return nextHour.format('YYYY-MM-DD HH:mm');
   }
 
   /**
-   * Extrae tiempo de un mensaje
+   * Extrae la hora de un mensaje
    * @param {string} message - Mensaje recibido
-   * @returns {string|null} - Tiempo extraído o null
+   * @returns {string|null} - Hora extraída o null
    */
   extractTimeFromMessage(message) {
-    // Buscar patrones de tiempo (HH:MM o H:MM)
-    const timeMatch = message.match(/\b([0-1]?[0-9]|2[0-3]):([0-5][0-9])\b/);
+    // Patrones para diferentes formatos de hora
+    const patterns = [
+      // Formato "hoy a las HH:MM"
+      { regex: /hoy a las (\d{1,2})[:.:]?(\d{2})?/i, today: true },
+      // Formato "mañana a las HH:MM"
+      { regex: /ma[ñn]ana a las (\d{1,2})[:.:]?(\d{2})?/i, tomorrow: true },
+      // Formato "HH:MM"
+      { regex: /\b(\d{1,2})[:.:](\d{2})\b/, today: true },
+      // Formato "a las HH"
+      { regex: /a las (\d{1,2})/i, today: true },
+      // Formato "a las HH de la tarde/noche"
+      { regex: /a las (\d{1,2})(?:\s+de la\s+(tarde|noche))?/i, today: true, pmIfSpecified: true }
+    ];
     
-    if (timeMatch) {
-      return timeMatch[0];
-    }
-    
-    // Buscar menciones de horas
-    const hourMatch = message.match(/\b([0-1]?[0-9]|2[0-3])(?:\s*(?:hrs|horas|h|:00))\b/);
-    
-    if (hourMatch) {
-      const hour = parseInt(hourMatch[1]);
-      return `${hour}:00`;
+    for (const pattern of patterns) {
+      const match = message.match(pattern.regex);
+      if (match) {
+        let hour = parseInt(match[1], 10);
+        const minute = match[2] ? parseInt(match[2], 10) : 0;
+        
+        // Ajustar AM/PM si se especifica "tarde" o "noche"
+        if (pattern.pmIfSpecified && match[3] && (match[3].toLowerCase() === 'tarde' || match[3].toLowerCase() === 'noche') && hour < 12) {
+          hour += 12;
+        }
+        
+        // Ajustar formato 24 horas
+        if (hour < 8 && hour !== 0) {
+          hour += 12; // Asumir PM para horas entre 1-7
+        }
+        
+        const now = new Date();
+        let date = new Date(now);
+        
+        if (pattern.tomorrow) {
+          date.setDate(date.getDate() + 1);
+        }
+        
+        date.setHours(hour, minute, 0, 0);
+        
+        // Formato YYYY-MM-DD HH:MM
+        return date.toISOString().substring(0, 16).replace('T', ' ');
+      }
     }
     
     return null;
   }
 
   /**
-   * Parsea el tiempo seleccionado a un formato que entienda el servicio de calendario
-   * @param {string} selectedTime - Tiempo seleccionado (formato HH:MM)
-   * @returns {string} - Fecha y hora en formato ISO
+   * Parsea la hora seleccionada
+   * @param {string} selectedTime - Hora seleccionada en formato YYYY-MM-DD HH:MM
+   * @param {string} timezone - Zona horaria del cliente
+   * @returns {Object} - Fecha, hora y fecha-hora
    */
-  parseSelectedTime(selectedTime) {
-    if (!selectedTime) {
-      // Si no hay tiempo seleccionado, usar el tiempo actual + 1 hora
-      return moment().add(1, 'hour').startOf('hour').toISOString();
+  parseSelectedTime(selectedTime, timezone = 'America/Lima') {
+    try {
+      // Si no hay hora seleccionada, usar la hora actual + 1 hora
+      if (!selectedTime) {
+        return this.parseSelectedTime(this.suggestNearestTime(timezone), timezone);
+      }
+      
+      // Parsear la fecha y hora
+      const dateTime = moment.tz(selectedTime, 'YYYY-MM-DD HH:mm', timezone);
+      
+      // Formatear para mostrar al usuario
+      const date = dateTime.format('DD/MM/YYYY');
+      const time = dateTime.format('HH:mm');
+      
+      // Convertir a UTC para Google Calendar
+      const utcDateTime = dateTime.clone().tz('UTC').format();
+      
+      return {
+        date,
+        time,
+        dateTime: utcDateTime
+      };
+    } catch (error) {
+      logger.error('Error al parsear hora seleccionada:', error);
+      
+      // Valor por defecto en caso de error
+      const now = moment().tz(timezone).add(1, 'hour').startOf('hour');
+      return {
+        date: now.format('DD/MM/YYYY'),
+        time: now.format('HH:mm'),
+        dateTime: now.clone().tz('UTC').format()
+      };
     }
-    
-    // Parsear el tiempo seleccionado
-    const [hours, minutes] = selectedTime.split(':').map(Number);
-    
-    // Crear fecha para hoy con el tiempo seleccionado
-    const dateTime = moment().hours(hours).minutes(minutes).seconds(0);
-    
-    // Si el tiempo ya pasó, programar para mañana
-    if (dateTime.isBefore(moment())) {
-      dateTime.add(1, 'day');
-    }
-    
-    return dateTime.toISOString();
   }
 }
 

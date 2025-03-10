@@ -1,5 +1,5 @@
 const { google } = require('googleapis');
-const moment = require('moment');
+const moment = require('moment-timezone');
 const logger = require('../utils/logger');
 
 // Variables globales
@@ -80,184 +80,146 @@ function generateMockAvailableSlots() {
 }
 
 /**
- * Verifica la disponibilidad en el calendario y devuelve slots disponibles
- * @returns {Promise<Array>} - Array de slots disponibles
+ * Verifica la disponibilidad en el calendario
+ * @param {Date} startDate - Fecha de inicio
+ * @param {Date} endDate - Fecha de fin
+ * @returns {Promise<Array>} - Slots disponibles
  */
-async function checkCalendarAvailability() {
+async function checkCalendarAvailability(startDate, endDate) {
   try {
-    // Si no tenemos credenciales válidas, devolver datos simulados
-    if (!calendar) {
-      logger.info('Usando slots disponibles simulados');
-      return generateMockAvailableSlots();
-    }
-    
-    // Obtener fecha actual y fecha límite (7 días después)
-    const now = moment();
-    const endDate = moment().add(7, 'days');
+    // Convertir fechas a formato ISO
+    const timeMin = new Date(startDate).toISOString();
+    const timeMax = new Date(endDate).toISOString();
     
     // Obtener eventos del calendario
     const response = await calendar.events.list({
       calendarId: 'primary',
-      timeMin: now.toISOString(),
-      timeMax: endDate.toISOString(),
+      timeMin,
+      timeMax,
       singleEvents: true,
-      orderBy: 'startTime'
+      orderBy: 'startTime',
     });
     
     const events = response.data.items;
     
-    // Generar slots disponibles (horario laboral: 9 AM - 5 PM)
+    // Crear slots disponibles (horario laboral: 9:00 - 17:00)
     const availableSlots = [];
-    const currentDate = moment(now).startOf('day');
+    const currentDate = new Date(startDate);
+    const endDateTime = new Date(endDate);
     
-    // Iterar por los próximos 7 días
-    while (currentDate.isSameOrBefore(endDate, 'day')) {
-      // Saltar fines de semana
-      if (currentDate.day() !== 0 && currentDate.day() !== 6) {
-        // Horarios disponibles (9 AM - 5 PM, slots de 1 hora)
+    while (currentDate < endDateTime) {
+      // Solo considerar días laborables (lunes a viernes)
+      const dayOfWeek = currentDate.getDay();
+      if (dayOfWeek >= 1 && dayOfWeek <= 5) {
+        // Horario laboral: 9:00 - 17:00
         for (let hour = 9; hour < 17; hour++) {
-          const slotStart = moment(currentDate).hour(hour).minute(0);
+          const slotStart = new Date(currentDate);
+          slotStart.setHours(hour, 0, 0, 0);
           
-          // Saltar slots en el pasado
-          if (slotStart.isBefore(now)) continue;
+          const slotEnd = new Date(slotStart);
+          slotEnd.setHours(slotStart.getHours() + 1);
           
-          // Verificar si el slot está disponible
-          const isAvailable = !events.some(event => {
-            const eventStart = moment(event.start.dateTime || event.start.date);
-            const eventEnd = moment(event.end.dateTime || event.end.date);
-            return slotStart.isBetween(eventStart, eventEnd, null, '[)');
-          });
-          
-          if (isAvailable) {
-            availableSlots.push({
-              date: slotStart.format('DD/MM/YYYY'),
-              time: slotStart.format('HH:mm'),
-              dateTime: slotStart.toISOString()
+          // Verificar si el slot ya pasó
+          if (slotStart > new Date()) {
+            // Verificar si el slot está disponible
+            const isAvailable = !events.some(event => {
+              const eventStart = new Date(event.start.dateTime || event.start.date);
+              const eventEnd = new Date(event.end.dateTime || event.end.date);
+              
+              return (
+                (slotStart >= eventStart && slotStart < eventEnd) ||
+                (slotEnd > eventStart && slotEnd <= eventEnd) ||
+                (slotStart <= eventStart && slotEnd >= eventEnd)
+              );
             });
-          }
-          
-          // Limitar a 5 slots disponibles
-          if (availableSlots.length >= 5) {
-            return availableSlots;
+            
+            if (isAvailable) {
+              availableSlots.push({
+                start: slotStart.toISOString(),
+                end: slotEnd.toISOString()
+              });
+            }
           }
         }
       }
       
       // Avanzar al siguiente día
-      currentDate.add(1, 'day');
+      currentDate.setDate(currentDate.getDate() + 1);
+      currentDate.setHours(0, 0, 0, 0);
     }
     
     return availableSlots;
   } catch (error) {
     logger.error('Error al verificar disponibilidad del calendario:', error);
-    // En caso de error, devolver datos simulados
-    return generateMockAvailableSlots();
+    throw error;
   }
 }
 
 /**
  * Crea un evento en el calendario
- * @param {Object} prospectState - Estado del prospecto
- * @param {string|Object} slotSelection - Selección del usuario o evento personalizado
- * @returns {Promise<Object>} - Detalles de la cita
+ * @param {Object} eventDetails - Detalles del evento
+ * @returns {Promise<Object>} - Evento creado
  */
-async function createCalendarEvent(prospectState, slotSelection) {
+async function createCalendarEvent(eventDetails) {
   try {
-    // Verificar si es un evento personalizado
-    if (typeof slotSelection === 'object' && slotSelection.startTime) {
-      return createCustomEvent(prospectState, slotSelection);
-    }
+    // Extraer detalles del evento
+    const {
+      summary,
+      description,
+      startDateTime,
+      duration,
+      attendees,
+      timeZone = 'America/Lima'
+    } = eventDetails;
     
-    // Obtener slots disponibles
-    const availableSlots = await checkCalendarAvailability();
+    // Crear fecha de inicio
+    const start = {
+      dateTime: startDateTime,
+      timeZone: timeZone
+    };
     
-    // Interpretar la selección del usuario
-    let selectedSlot;
+    // Crear fecha de fin (añadir duración)
+    const endDateTime = moment(startDateTime).add(duration, 'minutes').format();
+    const end = {
+      dateTime: endDateTime,
+      timeZone: timeZone
+    };
     
-    // Si no hay slots disponibles, crear uno para mañana a las 10:00 AM
-    if (availableSlots.length === 0) {
-      logger.info('No hay slots disponibles. Creando un slot para mañana a las 10:00 AM');
-      const tomorrow = moment().add(1, 'day').hour(10).minute(0).second(0);
-      selectedSlot = {
-        date: tomorrow.format('DD/MM/YYYY'),
-        time: '10:00',
-        dateTime: tomorrow.toISOString()
-      };
-    }
-    // Si es un número, seleccionar el slot correspondiente
-    else if (/^\d+$/.test(slotSelection.trim())) {
-      const index = parseInt(slotSelection.trim()) - 1;
-      if (index >= 0 && index < availableSlots.length) {
-        selectedSlot = availableSlots[index];
-      }
-    } 
-    // Si no es un número, intentar interpretar la fecha y hora
-    else {
-      // Aquí iría lógica más compleja para interpretar fechas en lenguaje natural
-      // Por simplicidad, usaremos el primer slot disponible
-      selectedSlot = availableSlots[0];
-    }
-    
-    if (!selectedSlot) {
-      throw new Error('No se pudo interpretar la selección de horario');
-    }
-    
-    // Si no tenemos credenciales válidas, simular la creación del evento
-    if (!calendar) {
-      logger.info('Simulando creación de evento en el calendario');
-      return {
-        date: selectedSlot.date,
-        time: selectedSlot.time,
-        calendarEventId: `mock-event-${Date.now()}`,
-        meetLink: `https://meet.google.com/mock-link-${Math.random().toString(36).substring(2, 7)}`
-      };
-    }
-    
-    // Crear evento en el calendario
+    // Crear evento
     const event = {
-      summary: `Llamada con ${prospectState.name}`,
-      description: `Llamada con prospecto de WhatsApp. Teléfono: ${prospectState.phoneNumber}`,
-      start: {
-        dateTime: selectedSlot.dateTime,
-        timeZone: 'America/Lima' // Ajustar según tu zona horaria
+      summary: summary || 'Reunión con Logifit',
+      description: description || 'Demostración del sistema de control de fatiga y somnolencia de Logifit.',
+      start,
+      end,
+      attendees: attendees || [],
+      reminders: {
+        useDefault: false,
+        overrides: [
+          { method: 'email', minutes: 24 * 60 }, // 1 día antes
+          { method: 'popup', minutes: 30 } // 30 minutos antes
+        ]
       },
-      end: {
-        dateTime: moment(selectedSlot.dateTime).add(1, 'hour').toISOString(),
-        timeZone: 'America/Lima' // Ajustar según tu zona horaria
-      },
-      attendees: [
-        { email: process.env.VENDEDOR_EMAIL },
-        // Si tienes el email del prospecto, podrías añadirlo aquí
-      ],
       conferenceData: {
         createRequest: {
-          requestId: `${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
-          conferenceSolutionKey: {
-            type: 'hangoutsMeet'
-          }
+          requestId: `logifit-meeting-${Date.now()}`
         }
       }
     };
     
-    // Crear evento
+    // Insertar evento en el calendario
     const response = await calendar.events.insert({
       calendarId: 'primary',
       resource: event,
-      conferenceDataVersion: 1
+      sendUpdates: 'all', // Enviar notificaciones a los asistentes
+      conferenceDataVersion: 1 // Crear enlace de Google Meet
     });
     
-    const createdEvent = response.data;
+    logger.info('Evento creado en el calendario:', response.data.htmlLink);
     
-    // Extraer detalles
-    return {
-      date: selectedSlot.date,
-      time: selectedSlot.time,
-      calendarEventId: createdEvent.id,
-      meetLink: createdEvent.hangoutLink || 'https://meet.google.com'
-    };
+    return response.data;
   } catch (error) {
     logger.error('Error al crear evento en el calendario:', error);
-    throw new Error('No se pudo crear el evento en el calendario');
+    throw error;
   }
 }
 
