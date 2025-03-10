@@ -2,7 +2,6 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const campaignFlow = require('./src/flows/campaignFlow');
-const { processAudioMessage } = require('./src/services/audioService');
 const logger = require('./src/utils/logger');
 
 // Simular un prospecto nuevo
@@ -26,10 +25,9 @@ const testMessages = [
     content: 'Mi nombre es Juan Pérez, soy gerente de operaciones en Transportes Norte'
   },
   
-  // Respuestas a las preguntas de calificación (primera como audio)
+  // Respuestas a las preguntas de calificación (simulando audio)
   {
     type: 'audio',
-    path: path.join(__dirname, 'test-audio', 'respuesta1.ogg'),
     transcription: 'No, nunca hemos usado un sistema así pero estamos interesados'
   },
   
@@ -68,19 +66,6 @@ const testMessages = [
 async function simulateConversation() {
   console.log('=== SIMULACIÓN DE CONVERSACIÓN DE WHATSAPP ===\n');
   
-  // Crear directorio para audios de prueba si no existe
-  const testAudioDir = path.join(__dirname, 'test-audio');
-  if (!fs.existsSync(testAudioDir)) {
-    fs.mkdirSync(testAudioDir, { recursive: true });
-    
-    // Aquí deberías copiar un archivo de audio real para la prueba
-    console.log(`Por favor, coloca un archivo de audio llamado 'respuesta1.ogg' en el directorio ${testAudioDir}`);
-    console.log('Presiona Ctrl+C para salir si necesitas hacer esto primero.\n');
-    
-    // Esperar 5 segundos para dar tiempo a leer el mensaje
-    await new Promise(resolve => setTimeout(resolve, 5000));
-  }
-  
   // Procesar cada mensaje
   for (const message of testMessages) {
     console.log(`Usuario (${message.type}): ${message.type === 'text' ? message.content : '[AUDIO]'}`);
@@ -89,24 +74,23 @@ async function simulateConversation() {
     
     // Procesar según el tipo de mensaje
     if (message.type === 'audio') {
-      if (fs.existsSync(message.path)) {
-        try {
-          // Procesar audio
-          const audioResult = await processAudioMessage(message.path, prospectState);
-          processedMessage = audioResult.transcription;
-          
-          console.log(`Transcripción: "${processedMessage}"`);
-          console.log(`Contexto: ${JSON.stringify(audioResult.context, null, 2)}`);
-        } catch (error) {
-          console.error('Error al procesar audio:', error.message);
-          processedMessage = message.transcription; // Usar transcripción predefinida como fallback
-          console.log(`Usando transcripción predefinida: "${processedMessage}"`);
-        }
-      } else {
-        console.warn(`Archivo de audio no encontrado: ${message.path}`);
-        processedMessage = message.transcription; // Usar transcripción predefinida
-        console.log(`Usando transcripción predefinida: "${processedMessage}"`);
-      }
+      // Simular procesamiento de audio
+      console.log(`Simulando transcripción de audio...`);
+      processedMessage = message.transcription;
+      console.log(`Transcripción: "${processedMessage}"`);
+      
+      // Simular contexto del audio
+      const simulatedContext = {
+        intent: 'response',
+        sentiment: 'positive',
+        keywords: ['sistema', 'interesados', 'nunca', 'usado'],
+        hasTimeReference: false,
+        hasEmailReference: false,
+        hasCompanyReference: false,
+        hasQuantityReference: false
+      };
+      
+      console.log(`Contexto: ${JSON.stringify(simulatedContext, null, 2)}`);
     } else {
       processedMessage = message.content;
     }

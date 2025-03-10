@@ -1,43 +1,40 @@
 const { google } = require('googleapis');
 const moment = require('moment');
-const { logger } = require('../utils/logger');
+const logger = require('../utils/logger');
 
-// Verificar si tenemos credenciales válidas
-const hasValidCredentials = 
-  process.env.GOOGLE_CLIENT_ID && 
-  !process.env.GOOGLE_CLIENT_ID.includes('tu_') &&
-  process.env.GOOGLE_CLIENT_SECRET && 
-  !process.env.GOOGLE_CLIENT_SECRET.includes('tu_') &&
-  process.env.GOOGLE_REFRESH_TOKEN && 
-  !process.env.GOOGLE_REFRESH_TOKEN.includes('tu_') &&
-  process.env.GOOGLE_REFRESH_TOKEN !== 'TEMPORAL_TOKEN_PLACEHOLDER';
+// Variables globales
+let calendar = null;
+let hasValidCredentials = false;
 
-// Configurar cliente de OAuth2
-let oauth2Client;
-let calendar;
-
+// Inicializar cliente de Google Calendar
 try {
-  if (hasValidCredentials) {
-    oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI
-    );
-
-    // Establecer token de actualización
+  // Configurar cliente OAuth2
+  const oauth2Client = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI
+  );
+  
+  // Establecer credenciales
+  if (process.env.GOOGLE_REFRESH_TOKEN) {
     oauth2Client.setCredentials({
       refresh_token: process.env.GOOGLE_REFRESH_TOKEN
     });
-
+    
     // Crear cliente de Calendar
     calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    hasValidCredentials = true;
+    
     logger.info('Cliente de Google Calendar inicializado correctamente');
   } else {
-    logger.warn('No se han configurado credenciales válidas para Google Calendar. Usando datos simulados.');
-    logger.info('Para configurar Google Calendar, ejecuta el script test-calendar.js y sigue las instrucciones.');
+    logger.warn('No se encontró GOOGLE_REFRESH_TOKEN en las variables de entorno');
   }
 } catch (error) {
-  logger.error('Error al inicializar Google Calendar:', error);
+  if (logger) {
+    logger.error('Error al inicializar Google Calendar:', error);
+  } else {
+    console.error('Error al inicializar Google Calendar:', error);
+  }
 }
 
 /**
