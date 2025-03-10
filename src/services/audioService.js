@@ -6,42 +6,6 @@ const axios = require('axios');
 const FormData = require('form-data');
 
 /**
- * Descarga un archivo de audio desde una URL
- * @param {string} url - URL del archivo de audio
- * @returns {Promise<string>} - Ruta del archivo descargado
- */
-async function downloadAudio(url) {
-  try {
-    const response = await axios({
-      method: 'GET',
-      url,
-      responseType: 'stream'
-    });
-    
-    // Crear directorio temporal si no existe
-    const tempDir = path.join(__dirname, '../../temp');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    
-    // Guardar archivo
-    const fileName = `audio_${Date.now()}.ogg`;
-    const filePath = path.join(tempDir, fileName);
-    const writer = fs.createWriteStream(filePath);
-    
-    response.data.pipe(writer);
-    
-    return new Promise((resolve, reject) => {
-      writer.on('finish', () => resolve(filePath));
-      writer.on('error', reject);
-    });
-  } catch (error) {
-    logger.error('Error al descargar audio:', error);
-    throw new Error('No se pudo descargar el archivo de audio');
-  }
-}
-
-/**
  * Convierte un archivo de audio a texto usando OpenAI Whisper
  * @param {string} audioPath - Ruta del archivo de audio
  * @returns {Promise<string>} - Texto transcrito
@@ -71,37 +35,32 @@ async function transcribeAudio(audioPath) {
       }
     );
     
-    // Eliminar archivo temporal
-    fs.unlinkSync(audioPath);
-    
     return response.data.text;
   } catch (error) {
     logger.error('Error al transcribir audio:', error);
-    
-    // Eliminar archivo temporal si existe
-    if (fs.existsSync(audioPath)) {
-      fs.unlinkSync(audioPath);
-    }
-    
     throw new Error('No se pudo transcribir el audio');
   }
 }
 
 /**
  * Procesa un mensaje de audio
- * @param {string} audioUrl - URL del archivo de audio
+ * @param {string} audioPath - Ruta del archivo de audio
  * @param {Object} prospectState - Estado del prospecto
  * @returns {Promise<Object>} - Texto transcrito y contexto
  */
-async function processAudioMessage(audioUrl, prospectState) {
+async function processAudioMessage(audioPath, prospectState) {
   try {
-    // Descargar audio
-    const audioPath = await downloadAudio(audioUrl);
-    
     // Transcribir audio
     const transcription = await transcribeAudio(audioPath);
     
     logger.info(`Audio transcrito: "${transcription}"`);
+    
+    // Eliminar archivo temporal
+    try {
+      fs.unlinkSync(audioPath);
+    } catch (error) {
+      logger.warn(`No se pudo eliminar el archivo temporal: ${audioPath}`);
+    }
     
     // Analizar contexto del mensaje
     const contextPrompt = `

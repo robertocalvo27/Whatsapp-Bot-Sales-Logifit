@@ -1,35 +1,36 @@
 require('dotenv').config();
-const { startWhatsAppBot } = require('./controllers/whatsappController');
-const { connectToDatabase } = require('./config/database');
-const { logger } = require('./utils/logger');
+const { connectToWhatsApp } = require('./whatsapp/baileys-connection');
+const db = require('./database');
+const logger = require('./utils/logger');
 
+// Función principal
 async function main() {
   try {
-    // Intentar conectar a la base de datos
-    try {
-      await connectToDatabase();
-      logger.info('Conexión a la base de datos establecida');
-    } catch (dbError) {
-      logger.warn('Continuando sin conexión a la base de datos. Los datos no se guardarán permanentemente.');
-    }
-
-    // Iniciar el bot de WhatsApp
-    await startWhatsAppBot();
+    // Conectar a la base de datos
+    await db.connect();
+    logger.info('Conexión a la base de datos establecida');
+    
+    // Conectar a WhatsApp
+    await connectToWhatsApp();
     logger.info('Bot de WhatsApp iniciado');
+    
+    // Manejar cierre de la aplicación
+    process.on('SIGINT', async () => {
+      logger.info('Cerrando aplicación...');
+      await db.close();
+      process.exit(0);
+    });
+    
+    process.on('SIGTERM', async () => {
+      logger.info('Cerrando aplicación...');
+      await db.close();
+      process.exit(0);
+    });
   } catch (error) {
     logger.error('Error al iniciar la aplicación:', error);
     process.exit(1);
   }
 }
 
-// Manejo de errores no capturados
-process.on('uncaughtException', (error) => {
-  logger.error('Error no capturado:', error);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  logger.error('Promesa rechazada no manejada:', reason);
-});
-
-// Iniciar la aplicación
+// Iniciar aplicación
 main(); 
