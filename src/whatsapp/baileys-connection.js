@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const logger = require('../utils/logger');
 const { handleWhatsAppMessage } = require('../whatsappHandler');
+const qrcode = require('qrcode-terminal');
 
 // Directorio para almacenar la información de autenticación
 const AUTH_FOLDER = path.join(__dirname, '../../auth_info_baileys');
@@ -15,78 +16,91 @@ if (!fs.existsSync(AUTH_FOLDER)) {
 
 // Crear socket de WhatsApp
 async function connectToWhatsApp() {
-  // Cargar estado de autenticación
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
-  
-  // Crear socket con opciones
-  const sock = makeWASocket({
-    printQRInTerminal: true,
-    auth: state,
-    logger: pino({ level: 'silent' })
-  });
-  
-  // Guardar credenciales cuando se actualicen
-  sock.ev.on('creds.update', saveCreds);
-  
-  // Manejar conexión
-  sock.ev.on('connection.update', (update) => {
-    const { connection, lastDisconnect } = update;
+  try {
+    // Cargar estado de autenticación
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
     
-    if (connection === 'close') {
-      const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+    // Crear socket con opciones
+    const sock = makeWASocket({
+      printQRInTerminal: true,
+      auth: state,
+      logger: pino({ level: 'silent' })
+    });
+    
+    // Guardar credenciales cuando se actualicen
+    sock.ev.on('creds.update', saveCreds);
+    
+    // Manejar conexión
+    sock.ev.on('connection.update', (update) => {
+      const { connection, lastDisconnect, qr } = update;
       
-      logger.info('Conexión cerrada debido a:', lastDisconnect.error);
-      
-      if (shouldReconnect) {
-        logger.info('Reconectando...');
-        connectToWhatsApp();
-      } else {
-        logger.info('Desconectado permanentemente, elimina la carpeta auth_info_baileys para volver a escanear el código QR');
+      // Mostrar código QR si está disponible
+      if (qr) {
+        console.log('\n===== ESCANEA ESTE CÓDIGO QR CON TU WHATSAPP =====\n');
+        qrcode.generate(qr, { small: true });
       }
-    } else if (connection === 'open') {
-      logger.info('Conexión establecida con WhatsApp');
-    }
-  });
-  
-  // Manejar mensajes entrantes
-  sock.ev.on('messages.upsert', async ({ messages }) => {
-    for (const message of messages) {
-      // Ignorar mensajes de estado y propios
-      if (message.key.remoteJid === 'status@broadcast' || message.key.fromMe) continue;
       
-      try {
-        // Extraer información del mensaje
-        const remoteJid = message.key.remoteJid;
-        const from = remoteJid.split('@')[0];
-        const type = getMessageType(message);
-        const body = getMessageContent(message, type);
-        const mediaUrl = await getMediaUrl(message, type, sock);
+      if (connection === 'close') {
+        const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
         
-        logger.logWhatsAppMessage('incoming', from, body || '[MEDIA]');
+        logger.info('Conexión cerrada debido a:', lastDisconnect?.error?.message || 'Razón desconocida');
         
-        // Procesar mensaje
-        const messageData = {
-          from,
-          body,
-          type,
-          mediaUrl
-        };
-        
-        // Manejar mensaje y obtener respuesta
-        const response = await handleWhatsAppMessage(messageData);
-        
-        // Enviar respuesta
-        if (response && response.text) {
-          await sock.sendMessage(remoteJid, { text: response.text });
-          logger.logWhatsAppMessage('outgoing', from, response.text);
+        if (shouldReconnect) {
+          logger.info('Reconectando...');
+          connectToWhatsApp();
+        } else {
+          logger.info('Desconectado permanentemente, elimina la carpeta auth_info_baileys para volver a escanear el código QR');
         }
-      } catch (error) {
-        logger.error('Error al procesar mensaje:', error);
+      } else if (connection === 'open') {
+        logger.info('Conexión establecida con WhatsApp');
+        console.log('\n===== BOT DE WHATSAPP CONECTADO Y LISTO =====\n');
       }
-    }
-  });
-  
-  return sock;
+    });
+    
+    // Manejar mensajes entrantes
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+      for (const message of messages) {
+        // Ignorar mensajes de estado y propios
+        if (message.key.remoteJid === 'status@broadcast' || message.key.fromMe) continue;
+        
+        try {
+          // Extraer información del mensaje
+          const remoteJid = message.key.remoteJid;
+          const from = remoteJid.split('@')[0];
+          const type = getMessageType(message);
+          const body = getMessageContent(message, type);
+          const mediaUrl = await getMediaUrl(message, type, sock);
+          
+          logger.logWhatsAppMessage('incoming', from, body || '[MEDIA]');
+          
+          // Procesar mensaje
+          const messageData = {
+            from,
+            body,
+            type,
+            mediaUrl
+          };
+          
+          // Manejar mensaje y obtener respuesta
+          const response = await handleWhatsAppMessage(messageData);
+          
+          // Enviar respuesta
+          if (response && response.text) {
+            await sock.sendMessage(remoteJid, { text: response.text });
+            logger.logWhatsAppMessage('outgoing', from, response.text);
+          }
+        } catch (error) {
+          logger.error('Error al procesar mensaje:', error);
+        }
+      }
+    });
+    
+    return sock;
+  } catch (error) {
+    logger.error('Error al conectar con WhatsApp:', error);
+    console.error('Error al conectar con WhatsApp:', error);
+    throw error;
+  }
 }
 
 // Obtener tipo de mensaje
