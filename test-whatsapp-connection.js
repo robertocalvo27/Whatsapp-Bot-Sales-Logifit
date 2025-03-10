@@ -1,4 +1,6 @@
 require('dotenv').config();
+// Importar crypto explícitamente
+global.crypto = require('crypto');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');

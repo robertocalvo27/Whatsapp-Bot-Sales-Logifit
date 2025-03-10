@@ -1,4 +1,6 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+// Importar crypto explícitamente
+global.crypto = require('crypto');
 const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
