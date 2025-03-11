@@ -117,11 +117,22 @@ class CampaignFlow {
     // Extraer nombre y posiblemente empresa/cargo
     const name = this.extractName(message);
     
+    // Intentar extraer nombre de empresa
+    let company = null;
+    const companyMatch = message.match(/(?:empresa|compañía|organización|trabajo en|trabajo para)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i);
+    if (companyMatch && companyMatch[1]) {
+      company = companyMatch[1].trim();
+    }
+    
     // Buscar información de la empresa si se menciona un RUC
     let companyInfo = null;
     const ruc = this.extractRUC(message);
     if (ruc) {
       companyInfo = await searchCompanyInfo(ruc);
+      // Si encontramos info por RUC, usarla para el nombre de la empresa
+      if (companyInfo && companyInfo.razonSocial) {
+        company = companyInfo.razonSocial;
+      }
     }
     
     // Iniciar calificación
@@ -136,6 +147,7 @@ ${question}`;
     const newState = {
       ...prospectState,
       name,
+      company,
       companyInfo,
       conversationState: this.states.QUALIFICATION,
       qualificationStep: 1,
@@ -358,9 +370,23 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
           dateTime
         };
         
+        // Extraer posible nombre de empresa del mensaje o usar el almacenado
+        let company = prospectState.company;
+        if (!company && message) {
+          // Buscar posible nombre de empresa en el mensaje
+          const companyMatch = message.match(/(?:empresa|compañía|organización|trabajo en|trabajo para)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i);
+          if (companyMatch && companyMatch[1]) {
+            company = companyMatch[1].trim();
+          }
+        }
+        
         // Usar el webhook para crear la cita en lugar de crearla directamente
         const webhookData = formatAppointmentData(
-          { ...prospectState, emails },
+          { 
+            ...prospectState, 
+            emails,
+            company: company || 'Empresa del cliente'
+          },
           appointmentDetails
         );
         
@@ -388,6 +414,7 @@ Por favor, confirma que has recibido la invitación respondiendo "Confirmado" o 
           ...prospectState,
           conversationState: this.states.FOLLOW_UP,
           emails,
+          company: company || prospectState.company, // Guardar la empresa si se encontró
           appointmentDetails,
           appointmentCreated: true, // Marcar que la cita fue creada
           lastInteraction: new Date()
