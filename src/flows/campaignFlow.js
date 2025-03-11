@@ -1,7 +1,8 @@
-const { generateOpenAIResponse } = require('../services/openaiService');
+const { generateOpenAIResponse, analyzeResponseRelevance } = require('../services/openaiService');
 const { checkCalendarAvailability, createCalendarEvent } = require('../services/calendarService');
 const { searchCompanyInfo } = require('../services/companyService');
-const moment = require('moment');
+const { sendAppointmentToMake, formatAppointmentData } = require('../services/webhookService');
+const moment = require('moment-timezone');
 const logger = require('../utils/logger');
 
 /**
@@ -82,9 +83,13 @@ class CampaignFlow {
     // Identificar la campaña por palabras clave
     const campaignType = this.identifyCampaign(message);
     
+    // Obtener nombre del vendedor desde variables de entorno
+    const vendedorNombre = process.env.VENDEDOR_NOMBRE || 'Roberto Calvo';
+    
     // Respuesta de saludo personalizada según la campaña
-    const greeting = `Buen día, gracias por contactarnos! 👋
-Para tener una mejor comunicación me brinda su nombre y área de trabajo`;
+    const greeting = `¡Hola! 👋😊 Soy ${vendedorNombre}, tu Asesor Comercial en LogiFit. ¡Será un placer acompañarte en este recorrido! 
+
+¿Me ayudas compartiendo tu nombre y el de tu empresa, por favor? 📦🚀`;
 
     // Actualizar estado
     const newState = {
@@ -150,8 +155,30 @@ ${question}`;
    * @returns {Promise<Object>} - Respuesta y nuevo estado
    */
   async handleQualification(prospectState, message) {
-    // Guardar respuesta a la pregunta actual
+    // Obtener la pregunta actual
     const currentQuestion = this.qualificationQuestions[prospectState.qualificationStep - 1];
+    
+    // Analizar si la respuesta es relevante a la pregunta actual
+    const relevanceAnalysis = await analyzeResponseRelevance(currentQuestion, message);
+    
+    // Si la respuesta no es relevante, manejarla de forma especial
+    if (!relevanceAnalysis.isRelevant) {
+      logger.info(`Respuesta no relevante detectada: "${message}" para pregunta: "${currentQuestion}"`);
+      console.log(`Respuesta no relevante detectada. Razonamiento: ${relevanceAnalysis.reasoning}`);
+      
+      // Si no debemos continuar con el flujo normal, responder según la sugerencia
+      if (!relevanceAnalysis.shouldContinue) {
+        return {
+          response: relevanceAnalysis.suggestedResponse,
+          newState: prospectState // Mantener el mismo estado para repetir la pregunta después
+        };
+      }
+      
+      // Si a pesar de no ser relevante debemos continuar, añadir una nota y seguir
+      console.log('Continuando con el flujo normal a pesar de respuesta no relevante');
+    }
+    
+    // Guardar respuesta a la pregunta actual
     const qualificationAnswers = {
       ...prospectState.qualificationAnswers,
       [currentQuestion]: message
@@ -310,7 +337,7 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
   }
 
   /**
-   * Maneja la recolección de correos electrónicos
+   * Maneja la recolección de correo electrónico
    * @param {Object} prospectState - Estado del prospecto
    * @param {string} message - Mensaje recibido
    * @returns {Promise<Object>} - Respuesta y nuevo estado
@@ -320,11 +347,34 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
     const emails = this.extractEmails(message);
     
     if (emails.length > 0) {
-      // Crear evento en el calendario
       try {
-        const appointmentDetails = await this.createAppointment(prospectState, emails);
+        // Parsear la hora seleccionada
+        const { date, time, dateTime } = this.parseSelectedTime(prospectState.selectedTime, prospectState.timezone);
         
-        const response = `¡Listo! He programado la reunión para ${appointmentDetails.date} a las ${appointmentDetails.time}.
+        // Crear detalles de la cita
+        const appointmentDetails = {
+          date,
+          time,
+          dateTime
+        };
+        
+        // Usar el webhook para crear la cita en lugar de crearla directamente
+        const webhookData = formatAppointmentData(
+          { ...prospectState, emails },
+          appointmentDetails
+        );
+        
+        // Enviar datos al webhook
+        const webhookResult = await sendAppointmentToMake(webhookData);
+        
+        if (!webhookResult.success) {
+          logger.error('Error al enviar datos de cita al webhook:', webhookResult.error);
+          throw new Error('Error al crear la cita a través del webhook');
+        }
+        
+        logger.info('Cita creada exitosamente a través del webhook');
+        
+        const response = `¡Listo! He programado la reunión para ${date} a las ${time}.
 
 🚀 ¡Únete a nuestra sesión de Logifit! ✨ Logifit es una moderna herramienta tecnológica inteligente adecuada para la gestión del descanso y salud de los colaboradores. Brindamos servicios de monitoreo preventivo como apoyo a la mejora de la salud y prevención de accidentes, con la finalidad de salvaguardar la vida de los trabajadores y ayudarles a alcanzar el máximo de su productividad en el proyecto.
 ✨🌟🌞 ¡Tu bienestar es nuestra prioridad! ⚒️👍
@@ -479,43 +529,6 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
   }
 
   /**
-   * Crea una cita en el calendario
-   * @param {Object} prospectState - Estado del prospecto
-   * @param {Array<string>} emails - Correos electrónicos
-   * @returns {Promise<Object>} - Detalles de la cita
-   */
-  async createAppointment(prospectState, emails) {
-    try {
-      // Obtener la hora seleccionada
-      const selectedTime = prospectState.selectedTime;
-      
-      // Parsear la hora seleccionada
-      const { date, time, dateTime } = this.parseSelectedTime(selectedTime, prospectState.timezone);
-      
-      // Crear evento en Google Calendar
-      const eventDetails = {
-        summary: 'Demostración de Logifit - Sistema de Control de Fatiga',
-        description: `Reunión con ${prospectState.name} para demostración del sistema de control de fatiga y somnolencia de Logifit.`,
-        startDateTime: dateTime,
-        duration: 30, // Duración en minutos
-        attendees: emails.map(email => ({ email })),
-        timeZone: prospectState.timezone || 'America/Lima' // Usar la zona horaria del cliente
-      };
-      
-      await createCalendarEvent(eventDetails);
-      
-      return {
-        date,
-        time,
-        dateTime
-      };
-    } catch (error) {
-      logger.error('Error al crear cita:', error);
-      throw error;
-    }
-  }
-
-  /**
    * Identifica la campaña basada en palabras clave
    * @param {string} message - Mensaje recibido
    * @returns {string} - Tipo de campaña
@@ -601,21 +614,54 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
     // Obtener hora actual en la zona horaria del cliente
     const now = moment().tz(timezone);
     
-    // Redondear a la siguiente hora completa
-    const nextHour = now.clone().add(1, 'hour').startOf('hour');
+    // Crear una copia para trabajar
+    let suggestedTime = now.clone();
     
-    // Si es después de las 17:00, sugerir para el día siguiente a las 10:00
-    if (nextHour.hour() >= 17) {
-      return nextHour.clone().add(1, 'day').hour(10).format('YYYY-MM-DD HH:mm');
-    }
+    // Avanzar al menos 1 hora desde ahora
+    suggestedTime.add(1, 'hour').startOf('hour');
     
-    // Si es antes de las 9:00, sugerir para las 10:00 del mismo día
-    if (nextHour.hour() < 9) {
-      return nextHour.clone().hour(10).format('YYYY-MM-DD HH:mm');
-    }
+    // Ajustar según día de la semana y hora
+    const adjustTimeForWorkingHours = (time) => {
+      const day = time.day();
+      const hour = time.hour();
+      
+      // Si es fin de semana (0 = domingo, 6 = sábado), avanzar al lunes
+      if (day === 0) { // Domingo
+        time.add(1, 'day').hour(9).minute(0);
+        return time;
+      } else if (day === 6) { // Sábado
+        time.add(2, 'day').hour(9).minute(0);
+        return time;
+      }
+      
+      // Ajustar según hora del día
+      if (hour < 9) {
+        // Antes del horario laboral, sugerir 9:00 AM
+        time.hour(9).minute(0);
+      } else if (hour >= 13 && hour < 14) {
+        // Durante el refrigerio, sugerir 2:00 PM
+        time.hour(14).minute(0);
+      } else if (hour >= 18) {
+        // Después del horario laboral, sugerir 9:00 AM del día siguiente
+        // Verificar si el día siguiente es fin de semana
+        const nextDay = time.clone().add(1, 'day');
+        if (nextDay.day() === 6) { // Si es sábado
+          time.add(3, 'day').hour(9).minute(0); // Avanzar al lunes
+        } else if (nextDay.day() === 0) { // Si es domingo
+          time.add(2, 'day').hour(9).minute(0); // Avanzar al lunes
+        } else {
+          time.add(1, 'day').hour(9).minute(0); // Avanzar al día siguiente
+        }
+      }
+      
+      return time;
+    };
     
-    // En horario laboral, sugerir la siguiente hora disponible
-    return nextHour.format('YYYY-MM-DD HH:mm');
+    // Aplicar ajustes de horario laboral
+    suggestedTime = adjustTimeForWorkingHours(suggestedTime);
+    
+    // Formatear la fecha y hora
+    return suggestedTime.format('YYYY-MM-DD HH:mm');
   }
 
   /**

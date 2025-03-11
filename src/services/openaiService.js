@@ -83,6 +83,16 @@ function generateMockResponse(message) {
     return Math.random() > 0.7 ? 'CONSULTA' : 'FINALIZAR';
   }
   
+  // Respuesta simulada para análisis de relevancia
+  if (content.includes('Analiza si la siguiente respuesta es relevante')) {
+    return JSON.stringify({
+      isRelevant: Math.random() > 0.3, // 70% de probabilidad de ser relevante
+      shouldContinue: Math.random() > 0.2, // 80% de probabilidad de continuar
+      suggestedResponse: 'Respuesta sugerida simulada para modo de prueba',
+      reasoning: 'Análisis simulado para modo de prueba'
+    });
+  }
+  
   // Respuesta genérica para consultas
   return `Esta es una respuesta simulada para modo de prueba. En un entorno real, aquí se generaría una respuesta personalizada usando OpenAI basada en la consulta: "${content.substring(0, 50)}..."`;
 }
@@ -130,6 +140,72 @@ async function generateOpenAIResponse(message) {
   }
 }
 
+/**
+ * Analiza si la respuesta del usuario es relevante a la pregunta actual
+ * @param {string} question - Pregunta realizada al usuario
+ * @param {string} answer - Respuesta del usuario
+ * @returns {Promise<Object>} - Resultado del análisis
+ */
+async function analyzeResponseRelevance(question, answer) {
+  try {
+    // Verificar si estamos en modo de prueba
+    if (!openai) {
+      return JSON.parse(generateMockResponse({
+        content: `Analiza si la siguiente respuesta es relevante a la pregunta: "${question}". Respuesta: "${answer}"`
+      }));
+    }
+    
+    // Preparar mensajes para la API
+    const messages = [
+      {
+        role: 'system',
+        content: `Eres un asistente analítico que evalúa si las respuestas de los usuarios son relevantes a las preguntas que se les hacen. 
+        
+        Debes determinar:
+        1. Si la respuesta es relevante a la pregunta (isRelevant: true/false)
+        2. Si se debe continuar con la siguiente pregunta o abordar lo que el usuario está diciendo (shouldContinue: true/false)
+        3. Una respuesta sugerida basada en el análisis (suggestedResponse: string)
+        4. El razonamiento detrás de tu análisis (reasoning: string)
+        
+        Responde en formato JSON con estos campos.`
+      },
+      {
+        role: 'user',
+        content: `Analiza si la siguiente respuesta es relevante a la pregunta.
+        
+        Pregunta: "${question}"
+        Respuesta: "${answer}"
+        
+        Proporciona tu análisis en formato JSON.`
+      }
+    ];
+    
+    // Llamar a la API de OpenAI
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: messages,
+      temperature: 0.3,
+      max_tokens: 500,
+      response_format: { type: "json_object" }
+    });
+    
+    // Extraer y parsear la respuesta JSON
+    const responseText = completion.choices[0].message.content;
+    return JSON.parse(responseText);
+  } catch (error) {
+    logger.error('Error al analizar relevancia de respuesta con OpenAI:', error);
+    
+    // En caso de error, devolver un resultado por defecto
+    return {
+      isRelevant: true, // Asumir que es relevante por defecto
+      shouldContinue: true, // Asumir que se debe continuar por defecto
+      suggestedResponse: "Gracias por tu respuesta. Continuemos con la siguiente pregunta.",
+      reasoning: "Error al analizar la respuesta, continuando con el flujo normal."
+    };
+  }
+}
+
 module.exports = {
-  generateOpenAIResponse
+  generateOpenAIResponse,
+  analyzeResponseRelevance
 }; 

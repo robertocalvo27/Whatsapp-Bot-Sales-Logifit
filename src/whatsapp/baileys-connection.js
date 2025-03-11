@@ -25,6 +25,33 @@ const processedMessages = new Set();
 // Tiempo máximo para considerar un mensaje como reciente (15 minutos en milisegundos)
 const MESSAGE_FRESHNESS_THRESHOLD = 15 * 60 * 1000;
 
+/**
+ * Simula un delay humano basado en la longitud del mensaje
+ * @param {string} text - Texto del mensaje
+ * @returns {Promise<void>} - Promesa que se resuelve después del delay
+ */
+async function simulateHumanDelay(text) {
+  if (!text) return;
+  
+  // Calcular tiempo base: aproximadamente 100ms por palabra
+  const wordCount = text.split(/\s+/).length;
+  
+  // Tiempo base: 1 segundo + 100ms por palabra
+  const baseTime = 1000 + (wordCount * 100);
+  
+  // Añadir componente aleatorio (±30%)
+  const randomFactor = 0.7 + (Math.random() * 0.6); // Entre 0.7 y 1.3
+  
+  // Calcular tiempo final (entre 1.5 y 8 segundos)
+  const delayTime = Math.min(Math.max(baseTime * randomFactor, 1500), 8000);
+  
+  // Mostrar que el bot está "escribiendo"
+  console.log(`Simulando escritura (${delayTime.toFixed(0)}ms)...`);
+  
+  // Esperar el tiempo calculado
+  return new Promise(resolve => setTimeout(resolve, delayTime));
+}
+
 // Crear socket de WhatsApp
 async function connectToWhatsApp() {
   try {
@@ -146,8 +173,12 @@ async function connectToWhatsApp() {
           // Manejar mensaje y obtener respuesta
           const response = await handleWhatsAppMessage(messageData);
           
-          // Enviar respuesta
+          // Enviar respuesta con delay para simular escritura humana
           if (response && response.text) {
+            // Simular que el bot está escribiendo
+            await simulateHumanDelay(response.text);
+            
+            // Enviar mensaje después del delay
             await sock.sendMessage(remoteJid, { text: response.text });
             logger.logWhatsAppMessage('outgoing', from, response.text);
             console.log(`Respuesta enviada a ${from}: ${response.text.substring(0, 100)}${response.text.length > 100 ? '...' : ''}`);
