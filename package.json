@@ -14,7 +14,7 @@
   "dependencies": {
     "@hapi/boom": "^10.0.1",
     "@whiskeysockets/baileys": "^6.7.16",
-    "axios": "^1.6.2",
+    "axios": "^1.8.2",
     "crypto": "^1.0.1",
     "dotenv": "^16.3.1",
     "form-data": "^4.0.0",
