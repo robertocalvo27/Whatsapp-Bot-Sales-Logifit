@@ -12,7 +12,8 @@ class CampaignFlow {
   constructor() {
     this.states = {
       GREETING: 'greeting',
-      QUALIFICATION: 'qualification',
+      INITIAL_QUALIFICATION: 'initial_qualification',
+      DEEP_QUALIFICATION: 'deep_qualification',
       MEETING_OFFER: 'meeting_offer',
       MEETING_SCHEDULING: 'meeting_scheduling',
       EMAIL_COLLECTION: 'email_collection',
@@ -20,11 +21,26 @@ class CampaignFlow {
       COMPLETED: 'completed'
     };
     
-    this.qualificationQuestions = [
-      '¿Han utilizado anteriormente algún software de control de fatiga y somnolencia?',
-      '¿Cuántas unidades o conductores tienen en su flota?',
-      '¿Cuál es el principal problema que enfrentan con la fatiga de sus conductores?'
-    ];
+    // Preguntas específicas por tipo de prospecto
+    this.qualificationQuestions = {
+      CURIOSO: [
+        '¿Actualmente conduces algún tipo de vehículo pesado?',
+        '¿En qué empresa trabajas actualmente?',
+        '¿Conoces al encargado de seguridad o flota en tu empresa?'
+      ],
+      INFLUENCER: [
+        '¿Qué rol desempeñas en la gestión de la flota o seguridad?',
+        '¿Cuántas unidades o conductores tienen en su flota actualmente?',
+        '¿Qué problemas específicos han identificado con la fatiga de conductores?',
+        '¿Quién sería el encargado de evaluar esta solución en tu empresa?'
+      ],
+      ENCARGADO: [
+        '¿Qué estrategias están utilizando actualmente para gestionar la fatiga?',
+        '¿Cuál es el tamaño de su flota y en qué sectores operan?',
+        '¿Han tenido incidentes relacionados con fatiga en los últimos meses?',
+        '¿Tienen un presupuesto asignado para soluciones de seguridad este año?'
+      ]
+    };
   }
 
   /**
@@ -44,8 +60,11 @@ class CampaignFlow {
       case this.states.GREETING:
         return this.handleGreeting(prospectState, message);
       
-      case this.states.QUALIFICATION:
-        return this.handleQualification(prospectState, message);
+      case this.states.INITIAL_QUALIFICATION:
+        return this.handleInitialQualification(prospectState, message);
+      
+      case this.states.DEEP_QUALIFICATION:
+        return this.handleDeepQualification(prospectState, message);
       
       case this.states.MEETING_OFFER:
         return this.handleMeetingOffer(prospectState, message);
@@ -89,13 +108,14 @@ class CampaignFlow {
     // Respuesta de saludo personalizada según la campaña
     const greeting = `¡Hola! 👋😊 Soy ${vendedorNombre}, tu Asesor Comercial en LogiFit. ¡Será un placer acompañarte en este recorrido! 
 
-¿Me ayudas compartiendo tu nombre y el de tu empresa, por favor? 📦🚀`;
+¿Me ayudas compartiendo tu nombre, cargo y el de tu empresa, por favor? 📦🚀`;
 
     // Actualizar estado
     const newState = {
       ...prospectState,
       conversationState: this.states.GREETING,
       campaignType,
+      initialMessage: message,
       qualificationStep: 0,
       qualificationAnswers: {},
       lastInteraction: new Date()
@@ -114,42 +134,54 @@ class CampaignFlow {
    * @returns {Promise<Object>} - Respuesta y nuevo estado
    */
   async handleGreeting(prospectState, message) {
-    // Extraer nombre y posiblemente empresa/cargo
-    const name = this.extractName(message);
+    // Extraer información básica
+    const extractedInfo = await this.extractProspectInfo(message);
     
-    // Intentar extraer nombre de empresa
-    let company = null;
-    const companyMatch = message.match(/(?:empresa|compañía|organización|trabajo en|trabajo para)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i);
-    if (companyMatch && companyMatch[1]) {
-      company = companyMatch[1].trim();
-    }
-    
-    // Buscar información de la empresa si se menciona un RUC
+    // Buscar información de la empresa
     let companyInfo = null;
-    const ruc = this.extractRUC(message);
-    if (ruc) {
-      companyInfo = await searchCompanyInfo(ruc);
-      // Si encontramos info por RUC, usarla para el nombre de la empresa
-      if (companyInfo && companyInfo.razonSocial) {
-        company = companyInfo.razonSocial;
-      }
+    if (extractedInfo.company) {
+      companyInfo = await this.searchCompanyInfo(extractedInfo.company);
     }
     
-    // Iniciar calificación
-    const question = this.qualificationQuestions[0];
-    const response = `Mucho gusto ${name}! 😊 
+    // Analizar el tipo de prospecto
+    const prospectAnalysis = await this.analyzeProspect({
+      ...extractedInfo,
+      companyInfo,
+      campaignType: prospectState.campaignType,
+      initialMessage: prospectState.initialMessage
+    });
+    
+    // Seleccionar siguiente pregunta basada en el tipo de prospecto
+    const questions = this.qualificationQuestions[prospectAnalysis.prospectType];
+    const nextQuestion = questions[0];
+    
+    let response;
+    let nextState;
+    
+    // Si el potencial es BAJO y es CURIOSO, dar respuesta educativa
+    if (prospectAnalysis.potential === 'BAJO' && prospectAnalysis.prospectType === 'CURIOSO') {
+      response = `Gracias ${extractedInfo.name}. Entiendo que estás interesado en nuestras soluciones de control de fatiga. 
+      
+Te comento que LogiFit es una solución empresarial especializada en flotas de transporte. ¿Te gustaría conocer más sobre cómo podemos ayudar a tu empresa a prevenir accidentes por fatiga?`;
+      nextState = this.states.FOLLOW_UP;
+    } else {
+      // Para prospectos con potencial, continuar con calificación
+      response = `Gracias ${extractedInfo.name}. Me gustaría entender mejor sus necesidades para poder asesorarle adecuadamente.
 
-Para poder ayudarte mejor con nuestra solución de control de fatiga y somnolencia, me gustaría hacerte algunas preguntas rápidas.
-
-${question}`;
-
+${nextQuestion}`;
+      nextState = this.states.DEEP_QUALIFICATION;
+    }
+    
     // Actualizar estado
     const newState = {
       ...prospectState,
-      name,
-      company,
+      ...extractedInfo,
       companyInfo,
-      conversationState: this.states.QUALIFICATION,
+      prospectType: prospectAnalysis.prospectType,
+      potential: prospectAnalysis.potential,
+      nextAction: prospectAnalysis.nextAction,
+      analysisReasoning: prospectAnalysis.reasoning,
+      conversationState: nextState,
       qualificationStep: 1,
       lastInteraction: new Date()
     };
@@ -161,14 +193,48 @@ ${question}`;
   }
 
   /**
-   * Maneja las respuestas a las preguntas de calificación
+   * Extrae información del prospecto del mensaje
+   * @param {string} message - Mensaje del prospecto
+   * @returns {Promise<Object>} - Información extraída
+   */
+  async extractProspectInfo(message) {
+    try {
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4',
+        messages: [
+          {
+            role: 'system',
+            content: 'Extrae el nombre, cargo y empresa del mensaje. Si no encuentras algún dato, marca como null. Responde en formato JSON.'
+          },
+          {
+            role: 'user',
+            content: message
+          }
+        ],
+        temperature: 0.3,
+        response_format: { type: "json_object" }
+      });
+
+      return JSON.parse(completion.choices[0].message.content);
+    } catch (error) {
+      logger.error('Error al extraer información del prospecto:', error);
+      return {
+        name: null,
+        position: null,
+        company: null
+      };
+    }
+  }
+
+  /**
+   * Maneja la respuesta a la calificación inicial
    * @param {Object} prospectState - Estado del prospecto
    * @param {string} message - Mensaje recibido
    * @returns {Promise<Object>} - Respuesta y nuevo estado
    */
-  async handleQualification(prospectState, message) {
+  async handleInitialQualification(prospectState, message) {
     // Obtener la pregunta actual
-    const currentQuestion = this.qualificationQuestions[prospectState.qualificationStep - 1];
+    const currentQuestion = this.qualificationQuestions[prospectState.prospectType][prospectState.qualificationStep - 1];
     
     // Analizar si la respuesta es relevante a la pregunta actual
     const relevanceAnalysis = await analyzeResponseRelevance(currentQuestion, message);
@@ -197,9 +263,101 @@ ${question}`;
     };
     
     // Verificar si hay más preguntas
-    if (prospectState.qualificationStep < this.qualificationQuestions.length) {
+    if (prospectState.qualificationStep < this.qualificationQuestions[prospectState.prospectType].length) {
       // Siguiente pregunta
-      const nextQuestion = this.qualificationQuestions[prospectState.qualificationStep];
+      const nextQuestion = this.qualificationQuestions[prospectState.prospectType][prospectState.qualificationStep];
+      
+      // Actualizar estado
+      const newState = {
+        ...prospectState,
+        qualificationAnswers,
+        qualificationStep: prospectState.qualificationStep + 1,
+        lastInteraction: new Date()
+      };
+      
+      return {
+        response: nextQuestion,
+        newState
+      };
+    } else {
+      // Analizar interés con OpenAI
+      const analysis = await this.analyzeInterest(qualificationAnswers);
+      
+      let response;
+      let nextState;
+      
+      // Si hay interés, ofrecer una reunión
+      if (analysis.shouldOfferAppointment) {
+        response = `Gracias por tus respuestas, ${prospectState.name}. 
+
+¿Tienes 20 minutos para explicarte cómo funciona nuestro sistema de control de fatiga y somnolencia? Podemos agendar una llamada rápida.`;
+        
+        nextState = this.states.MEETING_OFFER;
+      } else {
+        // Si no hay suficiente interés, hacer una pregunta general
+        response = `Gracias por tus respuestas, ${prospectState.name}.
+
+¿Hay algo específico sobre nuestro sistema de control de fatiga y somnolencia que te gustaría conocer?`;
+        
+        nextState = this.states.FOLLOW_UP;
+      }
+      
+      // Actualizar estado
+      const newState = {
+        ...prospectState,
+        qualificationAnswers,
+        conversationState: nextState,
+        interestAnalysis: analysis,
+        lastInteraction: new Date()
+      };
+      
+      return {
+        response,
+        newState
+      };
+    }
+  }
+
+  /**
+   * Maneja la respuesta a la calificación profunda
+   * @param {Object} prospectState - Estado del prospecto
+   * @param {string} message - Mensaje recibido
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async handleDeepQualification(prospectState, message) {
+    // Obtener la pregunta actual
+    const currentQuestion = this.qualificationQuestions[prospectState.prospectType][prospectState.qualificationStep - 1];
+    
+    // Analizar si la respuesta es relevante a la pregunta actual
+    const relevanceAnalysis = await analyzeResponseRelevance(currentQuestion, message);
+    
+    // Si la respuesta no es relevante, manejarla de forma especial
+    if (!relevanceAnalysis.isRelevant) {
+      logger.info(`Respuesta no relevante detectada: "${message}" para pregunta: "${currentQuestion}"`);
+      console.log(`Respuesta no relevante detectada. Razonamiento: ${relevanceAnalysis.reasoning}`);
+      
+      // Si no debemos continuar con el flujo normal, responder según la sugerencia
+      if (!relevanceAnalysis.shouldContinue) {
+        return {
+          response: relevanceAnalysis.suggestedResponse,
+          newState: prospectState // Mantener el mismo estado para repetir la pregunta después
+        };
+      }
+      
+      // Si a pesar de no ser relevante debemos continuar, añadir una nota y seguir
+      console.log('Continuando con el flujo normal a pesar de respuesta no relevante');
+    }
+    
+    // Guardar respuesta a la pregunta actual
+    const qualificationAnswers = {
+      ...prospectState.qualificationAnswers,
+      [currentQuestion]: message
+    };
+    
+    // Verificar si hay más preguntas
+    if (prospectState.qualificationStep < this.qualificationQuestions[prospectState.prospectType].length) {
+      // Siguiente pregunta
+      const nextQuestion = this.qualificationQuestions[prospectState.prospectType][prospectState.qualificationStep];
       
       // Actualizar estado
       const newState = {
