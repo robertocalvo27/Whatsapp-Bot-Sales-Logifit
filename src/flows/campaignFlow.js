@@ -6,16 +6,24 @@ const { humanizeResponse } = require('../utils/humanizer');
 const greetingFlow = require('./greetingFlow');
 const moment = require('moment-timezone');
 const logger = require('../utils/logger');
+const qualificationFlow = require('./qualificationFlow');
+const invitationFlow = require('./invitationFlow');
+const checkoutFlow = require('./checkoutFlow');
+const { withHumanDelayAsync } = require('../utils/humanDelay');
 
 /**
- * Maneja el flujo de conversación para campañas de marketing
+ * Clase principal que maneja el flujo de la campaña
+ * Orquesta los diferentes flujos de conversación según el estado
  */
 class CampaignFlow {
   constructor() {
+    this.vendedorNombre = process.env.VENDEDOR_NOMBRE || 'Roberto Calvo';
     this.states = {
       GREETING: 'greeting',
       INITIAL_QUALIFICATION: 'initial_qualification',
       DEEP_QUALIFICATION: 'deep_qualification',
+      INVITATION: 'invitation',
+      CHECKOUT: 'checkout',
       MEETING_OFFER: 'meeting_offer',
       MEETING_SCHEDULING: 'meeting_scheduling',
       EMAIL_COLLECTION: 'email_collection',
@@ -94,84 +102,397 @@ class CampaignFlow {
     return this.messageHistory.get(phoneNumber) || [];
   };
 
-  processMessage = async (prospectState, message) => {
+  /**
+   * Procesa un mensaje entrante y determina qué flujo debe manejarlo
+   * @param {string} message - Mensaje del usuario
+   * @param {Object} prospectState - Estado actual del prospecto
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async processMessage(message, prospectState) {
     try {
-      // Agregar mensaje al historial
-      if (prospectState.phoneNumber) {
-        this.addToHistory(prospectState.phoneNumber, {
-          type: 'received',
-          content: message
-        });
-      }
-
+      logger.info(`Procesando mensaje: "${message}" en estado: ${prospectState.conversationState || 'nuevo'}`);
+      
       let result;
-
-      // Si es un nuevo prospecto o está en estado greeting, usar greetingFlow
-      if (!prospectState.conversationState || prospectState.conversationState === this.states.GREETING) {
+      
+      // Si no hay estado o es un nuevo prospecto, iniciar con el saludo
+      if (!prospectState.conversationState || prospectState.conversationState === 'new') {
+        logger.info('Iniciando flujo de saludo para nuevo prospecto');
         result = await greetingFlow.handleInitialGreeting(message, prospectState);
       } else {
-        // Procesar según el estado actual
+        // Dirigir el mensaje al flujo correspondiente según el estado de la conversación
         switch (prospectState.conversationState) {
-          case this.states.INITIAL_QUALIFICATION:
-            result = await this.handleInitialQualification(prospectState, message);
+          case 'greeting':
+            logger.info('Continuando flujo de saludo');
+            result = await greetingFlow.handleInitialGreeting(message, prospectState);
             break;
-          
-          case this.states.DEEP_QUALIFICATION:
-            result = await this.handleDeepQualification(prospectState, message);
+            
+          case 'initial_qualification':
+            logger.info('Continuando flujo de calificación inicial');
+            result = await qualificationFlow.startQualification(message, prospectState);
             break;
-          
-          case this.states.MEETING_OFFER:
-            result = await this.handleMeetingOffer(prospectState, message);
+            
+          case 'qualified':
+            logger.info('Prospecto ya calificado, evaluando siguiente paso');
+            // Evaluar si el prospecto califica para invitación o checkout
+            result = await this.routeQualifiedProspect(message, prospectState);
             break;
-          
-          case this.states.MEETING_SCHEDULING:
-            result = await this.handleMeetingScheduling(prospectState, message);
+            
+          case 'invitation':
+            logger.info('Procesando flujo de invitación');
+            result = await invitationFlow.startInvitation(message, prospectState);
             break;
-          
-          case this.states.EMAIL_COLLECTION:
-            result = await this.handleEmailCollection(prospectState, message);
+            
+          case 'checkout':
+            logger.info('Procesando flujo de checkout');
+            result = await checkoutFlow.startCheckout(message, prospectState);
             break;
-          
-          case this.states.FOLLOW_UP:
-            result = await this.handleFollowUp(prospectState, message);
+            
+          case 'appointment_scheduling':
+            logger.info('Procesando programación de cita');
+            result = await this.handleAppointmentScheduling(message, prospectState);
             break;
-          
+            
+          case 'nurturing':
+            logger.info('Procesando nutrición de prospecto');
+            result = await this.handleNurturing(message, prospectState);
+            break;
+            
+          case 'closed':
+            logger.info('Conversación cerrada, reiniciando');
+            result = await this.handleClosedConversation(message, prospectState);
+            break;
+            
           default:
-            // Usar OpenAI para generar una respuesta general
-            const aiResponse = await generateOpenAIResponse({
-              role: 'user',
-              content: message
+            logger.warn(`Estado de conversación desconocido: ${prospectState.conversationState}`);
+            // Si el estado es desconocido, reiniciar con el saludo
+            result = await greetingFlow.handleInitialGreeting(message, {
+              ...prospectState,
+              conversationState: null
             });
-            result = {
-              response: aiResponse,
-              newState: prospectState
-            };
         }
       }
-
-      // Humanizar la respuesta
-      const humanizedChunks = await humanizeResponse(result.response);
       
-      // Registrar la respuesta en el historial
-      if (prospectState.phoneNumber) {
-        this.addToHistory(prospectState.phoneNumber, {
-          type: 'sent',
-          content: result.response
+      // Aplicar retraso humanizado antes de devolver la respuesta
+      return withHumanDelayAsync(Promise.resolve(result), result.response);
+    } catch (error) {
+      logger.error('Error en processMessage:', error.message);
+      
+      // En caso de error, proporcionar una respuesta genérica y mantener el estado
+      const errorResponse = {
+        response: `Disculpa, tuve un problema procesando tu mensaje. ¿Podrías reformularlo o intentar de nuevo más tarde? Si necesitas asistencia inmediata, puedes contactar directamente a ${this.vendedorNombre}.`,
+        newState: {
+          ...prospectState,
+          lastInteraction: new Date(),
+          lastError: error.message
+        }
+      };
+      
+      // Aplicar retraso humanizado incluso para mensajes de error
+      return withHumanDelayAsync(Promise.resolve(errorResponse), errorResponse.response);
+    }
+  }
+
+  /**
+   * Evalúa y dirige a un prospecto calificado al flujo correspondiente
+   * @param {string} message - Mensaje del usuario
+   * @param {Object} prospectState - Estado actual del prospecto
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async routeQualifiedProspect(message, prospectState) {
+    try {
+      logger.info(`Evaluando prospecto calificado: ${prospectState.name || 'Desconocido'} de ${prospectState.company || 'Empresa desconocida'}`);
+      
+      // Verificar si el prospecto es de alto valor según los criterios
+      const isHighValueProspect = invitationFlow.evaluateProspectValue(prospectState);
+      logger.info(`¿Es prospecto de alto valor?: ${isHighValueProspect}`);
+      
+      if (isHighValueProspect) {
+        // Si es de alto valor, dirigir al flujo de invitación
+        logger.info(`Dirigiendo a ${prospectState.name || 'Desconocido'} al flujo de invitación`);
+        return await invitationFlow.startInvitation(message, {
+          ...prospectState,
+          conversationState: 'invitation'
+        });
+      } else {
+        // Si no es de alto valor, dirigir al flujo de checkout
+        logger.info(`Dirigiendo a ${prospectState.name || 'Desconocido'} al flujo de checkout`);
+        return await checkoutFlow.startCheckout(message, {
+          ...prospectState,
+          conversationState: 'checkout'
         });
       }
+    } catch (error) {
+      logger.error(`Error en routeQualifiedProspect: ${error.message}`);
+      
+      // En caso de error, mantener en estado calificado y ofrecer opciones genéricas
+      return {
+        response: `Gracias por compartir esa información. ¿Te gustaría conocer más sobre nuestra solución LogiFit o prefieres programar una llamada con nuestro especialista?`,
+        newState: {
+          ...prospectState,
+          lastInteraction: new Date(),
+          lastError: error.message
+        }
+      };
+    }
+  }
 
-      // Registrar para depuración
-      logger.info(`Estado: ${result.newState.conversationState}, Respuesta: ${result.response.substring(0, 50)}...`);
+  /**
+   * Maneja prospectos ya calificados según su tipo y potencial
+   * @param {string} message - Mensaje del usuario
+   * @param {Object} prospectState - Estado actual del prospecto
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async handleQualifiedProspect(message, prospectState) {
+    try {
+      // Verificar si el mensaje indica interés en una cita
+      const lowerMessage = message.toLowerCase();
+      const wantsAppointment = lowerMessage.includes('cita') || 
+                              lowerMessage.includes('reunión') || 
+                              lowerMessage.includes('reunir') ||
+                              lowerMessage.includes('llamada') ||
+                              lowerMessage.includes('hablar') ||
+                              lowerMessage.includes('sí') ||
+                              lowerMessage.includes('si');
+      
+      // Verificar si el mensaje indica interés en más información
+      const wantsMoreInfo = lowerMessage.includes('información') || 
+                           lowerMessage.includes('info') || 
+                           lowerMessage.includes('detalles') ||
+                           lowerMessage.includes('más') ||
+                           lowerMessage.includes('envía') ||
+                           lowerMessage.includes('manda');
+      
+      // Determinar la siguiente acción basada en el tipo de prospecto y su respuesta
+      if (wantsAppointment) {
+        // Si quiere una cita, pasar a programación
+        return {
+          response: `¡Excelente! Me encantaría coordinar una llamada con nuestro especialista. ¿Qué día y horario te resultaría más conveniente para esta reunión? Tenemos disponibilidad de lunes a viernes de 9:00 a 18:00 hrs.`,
+          newState: {
+            ...prospectState,
+            conversationState: 'appointment_scheduling',
+            appointmentRequested: true,
+            lastInteraction: new Date()
+          }
+        };
+      } else if (wantsMoreInfo) {
+        // Si quiere más información, enviar material según su tipo
+        let response;
+        
+        if (prospectState.prospectType === 'ENCARGADO') {
+          response = `Con gusto te envío más información. Te comparto un documento con los detalles técnicos de nuestra solución LogiFit, casos de éxito y un análisis de ROI específico para empresas de transporte. ¿Hay algún aspecto en particular sobre el que te gustaría profundizar?`;
+        } else if (prospectState.prospectType === 'INFLUENCER') {
+          response = `Claro, te envío información que te será útil para presentar nuestra solución internamente. Incluye una presentación ejecutiva, beneficios clave y testimonios de clientes. Si necesitas apoyo para presentarlo a los tomadores de decisión, podemos coordinar una demostración conjunta.`;
+        } else {
+          response = `Con gusto te comparto información general sobre nuestra solución LogiFit. Te envío un folleto digital con las características principales y beneficios. Si tienes alguna pregunta específica, no dudes en consultarme.`;
+        }
+        
+        return {
+          response,
+          newState: {
+            ...prospectState,
+            conversationState: 'nurturing',
+            infoSent: true,
+            lastInteraction: new Date()
+          }
+        };
+      } else {
+        // Si la respuesta no es clara, hacer una pregunta directa
+        return {
+          response: `Para poder ayudarte mejor, ¿prefieres que agendemos una llamada con nuestro especialista o te gustaría recibir más información por este medio?`,
+          newState: {
+            ...prospectState,
+            lastInteraction: new Date()
+          }
+        };
+      }
+    } catch (error) {
+      logger.error('Error en handleQualifiedProspect:', error.message);
       
       return {
-        ...result,
-        humanizedResponse: humanizedChunks
+        response: `Gracias por tu interés. ¿Te gustaría programar una llamada con nuestro especialista o prefieres recibir más información por este medio?`,
+        newState: {
+          ...prospectState,
+          lastInteraction: new Date()
+        }
       };
-    } catch (error) {
-      logger.error('Error en processMessage:', error);
-      return greetingFlow.handleInitialGreeting(message, prospectState);
     }
-  };
+  }
+
+  /**
+   * Maneja la programación de citas
+   * @param {string} message - Mensaje del usuario
+   * @param {Object} prospectState - Estado actual del prospecto
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async handleAppointmentScheduling(message, prospectState) {
+    try {
+      // Analizar si el mensaje contiene información de fecha/hora
+      const hasDateInfo = this.containsDateInfo(message);
+      
+      if (hasDateInfo) {
+        // Si proporciona fecha/hora, confirmar la cita
+        return {
+          response: `Perfecto, he agendado tu cita para la fecha y horario que me indicas. Nuestro especialista ${this.vendedorNombre} se pondrá en contacto contigo en ese momento. Te enviaré un recordatorio un día antes. ¿Hay algo más en lo que pueda ayudarte mientras tanto?`,
+          newState: {
+            ...prospectState,
+            appointmentConfirmed: true,
+            appointmentDetails: message, // Guardar los detalles proporcionados
+            lastInteraction: new Date()
+          }
+        };
+      } else {
+        // Si no proporciona fecha/hora, solicitar nuevamente
+        return {
+          response: `Para agendar la cita, necesito que me indiques qué día y horario te resultaría más conveniente. Tenemos disponibilidad de lunes a viernes de 9:00 a 18:00 hrs.`,
+          newState: {
+            ...prospectState,
+            lastInteraction: new Date()
+          }
+        };
+      }
+    } catch (error) {
+      logger.error('Error en handleAppointmentScheduling:', error.message);
+      
+      return {
+        response: `Disculpa, tuve un problema al procesar la información de la cita. ¿Podrías indicarme nuevamente qué día y horario te resultaría más conveniente para la llamada?`,
+        newState: {
+          ...prospectState,
+          lastInteraction: new Date()
+        }
+      };
+    }
+  }
+
+  /**
+   * Maneja el proceso de nutrición de prospectos
+   * @param {string} message - Mensaje del usuario
+   * @param {Object} prospectState - Estado actual del prospecto
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async handleNurturing(message, prospectState) {
+    try {
+      // Analizar si el mensaje indica interés en una cita después de recibir información
+      const lowerMessage = message.toLowerCase();
+      const wantsAppointment = lowerMessage.includes('cita') || 
+                              lowerMessage.includes('reunión') || 
+                              lowerMessage.includes('reunir') ||
+                              lowerMessage.includes('llamada') ||
+                              lowerMessage.includes('hablar') ||
+                              lowerMessage.includes('especialista');
+      
+      // Analizar si tiene preguntas adicionales
+      const hasQuestions = lowerMessage.includes('pregunta') || 
+                          lowerMessage.includes('duda') || 
+                          lowerMessage.includes('cómo') ||
+                          lowerMessage.includes('cuánto') ||
+                          lowerMessage.includes('?');
+      
+      if (wantsAppointment) {
+        // Si quiere una cita después de recibir información, pasar a programación
+        return {
+          response: `¡Excelente decisión! Me encantaría coordinar una llamada con nuestro especialista. ¿Qué día y horario te resultaría más conveniente? Tenemos disponibilidad de lunes a viernes de 9:00 a 18:00 hrs.`,
+          newState: {
+            ...prospectState,
+            conversationState: 'appointment_scheduling',
+            appointmentRequested: true,
+            lastInteraction: new Date()
+          }
+        };
+      } else if (hasQuestions) {
+        // Si tiene preguntas adicionales, responder según el tipo de prospecto
+        let response;
+        
+        if (prospectState.prospectType === 'ENCARGADO') {
+          response = `Gracias por tu pregunta. Estaré encantado de resolverla, aunque para darte información más precisa y personalizada para ${prospectState.company || 'tu empresa'}, lo ideal sería coordinar una llamada con nuestro especialista. ¿Te gustaría que agendemos una breve reunión?`;
+        } else {
+          response = `Gracias por tu pregunta. Intentaré responderla lo mejor posible. Si necesitas información más detallada o personalizada, podríamos coordinar una llamada con nuestro especialista. ¿Qué te parece?`;
+        }
+        
+        return {
+          response,
+          newState: {
+            ...prospectState,
+            lastInteraction: new Date()
+          }
+        };
+      } else {
+        // Si no hay una intención clara, ofrecer ayuda adicional
+        return {
+          response: `Espero que la información que te compartí sea útil. Si tienes alguna pregunta específica o te gustaría programar una llamada con nuestro especialista para profundizar en cómo podemos ayudar a ${prospectState.company || 'tu empresa'}, no dudes en decírmelo.`,
+          newState: {
+            ...prospectState,
+            lastInteraction: new Date()
+          }
+        };
+      }
+    } catch (error) {
+      logger.error('Error en handleNurturing:', error.message);
+      
+      return {
+        response: `Espero que la información que te compartí sea útil. ¿Hay algo más en lo que pueda ayudarte?`,
+        newState: {
+          ...prospectState,
+          lastInteraction: new Date()
+        }
+      };
+    }
+  }
+
+  /**
+   * Maneja conversaciones cerradas o inactivas
+   * @param {string} message - Mensaje del usuario
+   * @param {Object} prospectState - Estado actual del prospecto
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async handleClosedConversation(message, prospectState) {
+    // Reiniciar la conversación pero mantener la información del prospecto
+    return await greetingFlow.handleInitialGreeting(message, {
+      name: prospectState.name,
+      company: prospectState.company,
+      isIndependent: prospectState.isIndependent,
+      messageHistory: prospectState.messageHistory || [],
+      conversationState: null,
+      lastInteraction: new Date()
+    });
+  }
+
+  /**
+   * Verifica si un mensaje contiene información de fecha/hora
+   * @param {string} message - Mensaje a analizar
+   * @returns {boolean} - True si contiene información de fecha/hora
+   */
+  containsDateInfo(message) {
+    const lowerMessage = message.toLowerCase();
+    
+    // Patrones comunes de fechas y horas
+    const datePatterns = [
+      /lunes|martes|miércoles|miercoles|jueves|viernes/,
+      /\d{1,2}\s+de\s+\w+/,
+      /\d{1,2}\/\d{1,2}/,
+      /mañana|pasado\s+mañana|hoy/,
+      /próxima\s+semana|proxima\s+semana|esta\s+semana/
+    ];
+    
+    const timePatterns = [
+      /\d{1,2}:\d{2}/,
+      /\d{1,2}\s*(?:am|pm|a\.m\.|p\.m\.)/i,
+      /\d{1,2}\s*(?:hrs|horas)/,
+      /medio\s*día|mediodia|tarde|mañana|maniana/
+    ];
+    
+    // Verificar si contiene patrones de fecha
+    const hasDate = datePatterns.some(pattern => pattern.test(lowerMessage));
+    
+    // Verificar si contiene patrones de hora
+    const hasTime = timePatterns.some(pattern => pattern.test(lowerMessage));
+    
+    // Considerar que tiene información de fecha/hora si contiene al menos uno de cada uno
+    // o si menciona explícitamente disponibilidad
+    return (hasDate && hasTime) || 
+           lowerMessage.includes('disponible') || 
+           lowerMessage.includes('disponibilidad') ||
+           lowerMessage.includes('puedo');
+  }
 
   identifyCampaign = (prospectState, message) => {
     try {

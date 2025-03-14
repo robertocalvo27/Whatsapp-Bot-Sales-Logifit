@@ -1,5 +1,7 @@
 const { generateOpenAIResponse } = require('../services/openaiService');
 const logger = require('../utils/logger');
+const qualificationFlow = require('./qualificationFlow');
+const { withHumanDelayAsync } = require('../utils/humanDelay');
 
 class GreetingFlow {
   constructor() {
@@ -194,9 +196,11 @@ class GreetingFlow {
    */
   handleInitialGreeting = async (message, prospectState) => {
     try {
+      let result;
+      
       // Si es el primer mensaje o no hay estado de conversación, enviar mensaje de bienvenida
       if (!prospectState.conversationState) {
-        return {
+        result = {
           response: this.welcomeMessage,
           newState: {
             ...prospectState,
@@ -205,10 +209,8 @@ class GreetingFlow {
             lastInteraction: new Date()
           }
         };
-      }
-
-      // Si ya estamos en estado de greeting, analizar la respuesta para extraer nombre y empresa
-      if (prospectState.conversationState === 'greeting') {
+      } else if (prospectState.conversationState === 'greeting') {
+        // Si ya estamos en estado de greeting, analizar la respuesta para extraer nombre y empresa
         let messageAnalysis;
         
         try {
@@ -258,7 +260,6 @@ class GreetingFlow {
           }
         } catch (error) {
           logger.error('Error al analizar mensaje:', error.message);
-          // En caso de error, usar análisis local
           messageAnalysis = this.analyzeMessage(message);
           logger.info('Usando análisis local como fallback:', messageAnalysis);
         }
@@ -277,19 +278,27 @@ class GreetingFlow {
           // Mensaje de transición a la fase de calificación
           let response;
           if (newState.name !== 'Desconocido' && newState.company !== 'Desconocida') {
-            response = `Gracias ${newState.name}. Me gustaría entender mejor las necesidades de ${newState.company === 'Independiente' ? 'tu negocio' : newState.company}.`;
+            // Pasar a QualificationFlow si tenemos nombre y empresa
+            result = await qualificationFlow.startQualification(message, newState);
           } else if (newState.name !== 'Desconocido') {
             response = `Gracias ${newState.name}. ¿Me podrías confirmar en qué empresa trabajas o si eres independiente?`;
+            result = {
+              response,
+              newState
+            };
           } else if (newState.company !== 'Desconocida') {
             response = `Gracias. Me gustaría entender mejor las necesidades de ${newState.company}. ¿Me podrías confirmar tu nombre?`;
+            result = {
+              response,
+              newState
+            };
           } else {
             response = `Gracias por tu mensaje. Para poder ayudarte mejor, ¿me podrías confirmar tu nombre y empresa?`;
+            result = {
+              response,
+              newState
+            };
           }
-
-          return {
-            response,
-            newState
-          };
         } else {
           // Si no contiene nombre ni empresa, solicitar nuevamente
           const greetingAttempts = (prospectState.greetingAttempts || 1) + 1;
@@ -297,63 +306,51 @@ class GreetingFlow {
           let response;
           if (greetingAttempts <= 2) {
             response = `Disculpa, necesito tu nombre y empresa para poder ayudarte mejor. ¿Me los podrías proporcionar, por favor?`;
-          } else {
-            // Después de 2 intentos, pasar a calificación con datos desconocidos
-            return {
-              response: `Entiendo. Continuemos con algunas preguntas para entender mejor tus necesidades.`,
+            result = {
+              response,
               newState: {
                 ...prospectState,
-                conversationState: 'initial_qualification',
-                name: prospectState.name || 'Desconocido',
-                company: prospectState.company || 'Desconocida',
+                greetingAttempts,
                 lastInteraction: new Date()
               }
             };
-          }
-
-          return {
-            response,
-            newState: {
+          } else {
+            // Después de 2 intentos, pasar a calificación con datos desconocidos
+            const newState = {
               ...prospectState,
-              greetingAttempts,
+              conversationState: 'initial_qualification',
+              name: prospectState.name || 'Desconocido',
+              company: prospectState.company || 'Desconocida',
               lastInteraction: new Date()
-            }
-          };
+            };
+            
+            // Pasar a QualificationFlow después de varios intentos
+            result = await qualificationFlow.startQualification(message, newState);
+          }
         }
       } else if (prospectState.conversationState === 'initial_qualification') {
-        // Si ya estamos en calificación inicial, mantener el estado y devolver un mensaje indicando que continuamos
-        return {
-          response: `Continuemos con la calificación. ¿Cuántas unidades de transporte maneja ${prospectState.company === 'Desconocida' ? 'tu empresa' : prospectState.company}?`,
-          newState: {
-            ...prospectState,
-            lastInteraction: new Date()
-          }
-        };
+        // Si ya estamos en calificación inicial, pasar el control a QualificationFlow
+        result = await qualificationFlow.startQualification(message, prospectState);
       }
-
-      // Si llegamos aquí, algo salió mal, devolver respuesta por defecto
-      return {
-        response: this.welcomeMessage,
-        newState: {
-          ...prospectState,
-          conversationState: 'greeting',
-          greetingAttempts: 1,
-          lastInteraction: new Date()
-        }
-      };
+      
+      // Aplicar retraso humanizado antes de devolver la respuesta
+      return withHumanDelayAsync(Promise.resolve(result), result.response);
     } catch (error) {
       logger.error('Error en handleInitialGreeting:', error.message);
       
-      // Respuesta por defecto en caso de error
-      return {
-        response: this.welcomeMessage,
+      // En caso de error, proporcionar una respuesta genérica
+      const errorResponse = {
+        response: `Disculpa, tuve un problema procesando tu mensaje. ¿Podrías intentar de nuevo? Estoy interesado en conocer tu nombre y empresa para poder ayudarte mejor.`,
         newState: {
           ...prospectState,
           conversationState: 'greeting',
-          greetingAttempts: 1,
-          lastInteraction: new Date()
+          lastInteraction: new Date(),
+          lastError: error.message
         }
       };
+      
+      // Aplicar retraso humanizado incluso para mensajes de error
+      return withHumanDelayAsync(Promise.resolve(errorResponse), errorResponse.response);
     }
   }
 }
