@@ -1,5 +1,40 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
+const { generateOpenAIResponse } = require('./openaiService');
+
+// Base de datos en memoria de empresas conocidas
+const KNOWN_COMPANIES = {
+  'coca cola': {
+    name: 'The Coca-Cola Company',
+    sector: 'bebidas',
+    size: 'GRANDE',
+    hasFleet: true,
+    fleetSize: 'GRANDE',
+    relevantDepartments: ['Logística', 'Seguridad', 'Operaciones'],
+    keyPositions: ['Gerente de Logística', 'Supervisor de Flota', 'Coordinador de Seguridad'],
+    companyType: 'ENTERPRISE'
+  },
+  'backus': {
+    name: 'Backus AB InBev',
+    sector: 'bebidas',
+    size: 'GRANDE',
+    hasFleet: true,
+    fleetSize: 'GRANDE',
+    relevantDepartments: ['Distribución', 'Seguridad Industrial', 'Operaciones'],
+    keyPositions: ['Jefe de Distribución', 'Supervisor de Seguridad', 'Coordinador de Flota'],
+    companyType: 'ENTERPRISE'
+  },
+  'lindley': {
+    name: 'Corporación Lindley',
+    sector: 'bebidas',
+    size: 'GRANDE',
+    hasFleet: true,
+    fleetSize: 'GRANDE',
+    relevantDepartments: ['Logística', 'Seguridad', 'Distribución'],
+    keyPositions: ['Gerente de Distribución', 'Jefe de Seguridad', 'Supervisor de Flota'],
+    companyType: 'ENTERPRISE'
+  }
+};
 
 /**
  * Busca información de una empresa por su RUC
@@ -57,6 +92,96 @@ async function searchCompanyInfo(ruc) {
       distrito: '',
       provincia: '',
       departamento: ''
+    };
+  }
+}
+
+/**
+ * Busca información de una empresa por su nombre
+ * @param {string} companyName - Nombre de la empresa
+ * @returns {Promise<Object>} - Información de la empresa
+ */
+async function searchCompanyByName(companyName) {
+  try {
+    if (!companyName) {
+      logger.warn('Nombre de empresa no proporcionado');
+      return null;
+    }
+
+    // Normalizar el nombre para búsqueda
+    const normalizedName = companyName.toLowerCase().trim();
+
+    // Buscar en empresas conocidas
+    for (const [key, company] of Object.entries(KNOWN_COMPANIES)) {
+      if (normalizedName.includes(key)) {
+        logger.info(`Empresa conocida encontrada: ${company.name}`);
+        return {
+          ...company,
+          confidence: 'HIGH',
+          source: 'KNOWN_COMPANIES'
+        };
+      }
+    }
+
+    // Si no está en la base conocida, usar OpenAI para análisis
+    const analysis = await analyzeCompanyWithAI(companyName);
+    
+    return {
+      ...analysis,
+      confidence: 'MEDIUM',
+      source: 'AI_ANALYSIS'
+    };
+
+  } catch (error) {
+    logger.error(`Error al buscar empresa por nombre ${companyName}:`, error);
+    return {
+      name: companyName,
+      confidence: 'LOW',
+      source: 'ERROR',
+      error: error.message
+    };
+  }
+}
+
+/**
+ * Analiza una empresa usando OpenAI
+ * @param {string} companyName - Nombre de la empresa
+ * @returns {Promise<Object>} - Análisis de la empresa
+ */
+async function analyzeCompanyWithAI(companyName) {
+  try {
+    const prompt = `Analiza la siguiente empresa: "${companyName}"
+    
+    Proporciona la siguiente información en formato JSON:
+    1. name: Nombre completo o probable de la empresa
+    2. sector: Sector principal de operación
+    3. size: Tamaño probable (PEQUEÑA, MEDIANA, GRANDE)
+    4. hasFleet: Probabilidad de que tenga flota de vehículos (true/false)
+    5. fleetSize: Si tiene flota, tamaño estimado (PEQUEÑA: 1-5, MEDIANA: 6-20, GRANDE: >20)
+    6. relevantDepartments: Array de departamentos probables relacionados con transporte/seguridad
+    7. keyPositions: Array de cargos clave para contactar
+    8. companyType: Tipo de empresa (ENTERPRISE, SMB, STARTUP)
+    
+    Responde SOLO con el JSON, sin texto adicional.`;
+
+    const response = await generateOpenAIResponse({
+      role: 'system',
+      content: prompt
+    });
+
+    return JSON.parse(response);
+
+  } catch (error) {
+    logger.error('Error al analizar empresa con AI:', error);
+    return {
+      name: companyName,
+      sector: 'desconocido',
+      size: 'DESCONOCIDO',
+      hasFleet: false,
+      fleetSize: 'DESCONOCIDO',
+      relevantDepartments: [],
+      keyPositions: [],
+      companyType: 'DESCONOCIDO'
     };
   }
 }
@@ -124,6 +249,7 @@ function getRelevantSuccessCases(sector) {
 
 module.exports = {
   searchCompanyInfo,
+  searchCompanyByName,
   analyzeCompanySector,
   getRelevantSuccessCases
 }; 

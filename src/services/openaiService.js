@@ -17,43 +17,83 @@ try {
 
 // Base de conocimiento para el asistente
 const KNOWLEDGE_BASE = `
-# Información de la Empresa
-Somos una empresa dedicada a [descripción de la empresa y sus productos/servicios].
-Nuestros principales productos/servicios son:
-- [Producto/Servicio 1]: [Descripción breve]
-- [Producto/Servicio 2]: [Descripción breve]
-- [Producto/Servicio 3]: [Descripción breve]
+# Tipos de Prospectos
+1. CURIOSO (Individual):
+   - Busca información para uso personal
+   - Preguntas directas sobre precio
+   - Suele ser conductor directo
+   - Interesado en compra individual
+   - Prioridad: BAJA (no es target empresarial)
 
-# Información de Campañas
-Actualmente tenemos las siguientes campañas activas:
-- [Campaña 1]: [Descripción y beneficios]
-- [Campaña 2]: [Descripción y beneficios]
+2. INFLUENCER (Interno):
+   - Trabajador o empleado que quiere proponer la solución
+   - No conoce bien el servicio de monitoreo
+   - Puede ser supervisor o asistente
+   - No es tomador final de decisiones
+   - Prioridad: MEDIA (puede influir en decisión)
 
-# Precios y Promociones
-- [Producto/Servicio 1]: [Precio] con [Promoción actual si existe]
-- [Producto/Servicio 2]: [Precio] con [Promoción actual si existe]
+3. ENCARGADO (Decisor):
+   - Poder de decisión o influencia directa
+   - Profesional con conocimiento del problema
+   - Cercano al dolor de monitoreo/impacto
+   - Puede aprobar compras
+   - Prioridad: ALTA (decisor clave)
 
-# Proceso de Venta
-1. Consulta inicial
-2. Demostración/Presentación personalizada
-3. Propuesta formal
-4. Cierre de venta
+# Criterios de Calificación
+- Tamaño de flota (objetivo: mínimo 5 unidades)
+- Nivel de decisión del contacto
+- Conocimiento del problema de fatiga
+- Urgencia de la necesidad
+- Presupuesto disponible
 
-# Preguntas Frecuentes
-P: [Pregunta frecuente 1]
-R: [Respuesta 1]
+# Estrategias por Tipo
+CURIOSO:
+- Educar sobre beneficios empresariales
+- Identificar si tiene conexión con flotas
+- No invertir mucho tiempo si es puramente individual
 
-P: [Pregunta frecuente 2]
-R: [Respuesta 2]
+INFLUENCER:
+- Proporcionar material educativo
+- Ayudar a construir caso de negocio
+- Identificar tomador de decisiones real
+- Ofrecer demo si puede influir en decisión
 
-# Instrucciones para el Asistente
-- Sé amable y profesional en todo momento.
-- Si detectas un alto interés, ofrece programar una cita con un asesor.
-- Si no conoces la respuesta a una pregunta específica, ofrece consultar con un especialista.
-- Nunca inventes información sobre precios o características de productos.
-- Si el cliente muestra frustración o enojo, ofrece conectarlo con un asesor humano.
-- Identifica prospectos de alta calidad basándote en su interés específico, preguntas detalladas y disposición para avanzar en el proceso de venta.
-`;
+ENCARGADO:
+- Enfoque consultivo
+- Demostración personalizada
+- ROI y casos de éxito relevantes
+- Agendar reunión prioritaria
+
+# Señales de Calificación
+ALTA:
+- Menciona flota de vehículos
+- Cargo directivo o gerencial
+- Conoce problemática de fatiga
+- Menciona presupuesto o proyecto
+- Empresa reconocida o grande
+
+MEDIA:
+- Cargo supervisorio
+- Muestra interés genuino
+- Puede influir en decisiones
+- Conoce operaciones
+
+BAJA:
+- Interés individual
+- Sin poder de decisión
+- Solo consulta precios
+- No menciona empresa
+
+# Instrucciones de Calificación
+1. Identificar tipo de prospecto
+2. Evaluar tamaño y relevancia de empresa
+3. Determinar nivel de decisión
+4. Calificar urgencia y necesidad
+5. Recomendar siguiente acción:
+   - REUNIÓN: Para prospectos calificados
+   - EDUCAR: Para influencers con potencial
+   - NUTRIR: Para curiosos con conexiones
+   - DESCARTAR: Para individuales sin potencial`;
 
 /**
  * Genera respuestas simuladas para modo de prueba
@@ -98,6 +138,39 @@ function generateMockResponse(message) {
 }
 
 /**
+ * Limpia una respuesta de OpenAI para asegurar que es un JSON válido
+ * @param {string} response - Respuesta de OpenAI
+ * @returns {string} - JSON limpio
+ */
+function cleanJsonResponse(response) {
+  try {
+    // Remover cualquier markdown o texto antes/después del JSON
+    let cleaned = response.trim();
+    
+    // Si la respuesta está envuelta en backticks, removerlos
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.substring(7);
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.substring(3);
+    }
+    if (cleaned.endsWith('```')) {
+      cleaned = cleaned.substring(0, cleaned.length - 3);
+    }
+    
+    // Limpiar espacios y saltos de línea
+    cleaned = cleaned.trim();
+    
+    // Validar que es un JSON válido
+    JSON.parse(cleaned);
+    
+    return cleaned;
+  } catch (error) {
+    logger.error('Error al limpiar respuesta JSON:', error);
+    throw new Error('No se pudo limpiar la respuesta JSON');
+  }
+}
+
+/**
  * Genera una respuesta usando OpenAI
  * @param {Object} message - Mensaje a enviar a OpenAI
  * @returns {Promise<string>} - Respuesta generada
@@ -121,19 +194,47 @@ async function generateOpenAIResponse(message) {
     if (message) {
       messages.push(message);
     }
+
+    // Determinar si la respuesta debe ser JSON
+    const shouldReturnJson = message.content.includes('JSON') || 
+                           message.content.includes('json') ||
+                           message.content.toLowerCase().includes('formato json');
     
     // Llamar a la API de OpenAI
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',  // Puedes cambiar a un modelo más económico como 'gpt-3.5-turbo'
+      model: 'gpt-4',
       messages: messages,
-      temperature: 0.7,
-      max_tokens: 500
+      temperature: shouldReturnJson ? 0.1 : 0.7,
+      max_tokens: 500,
+      response_format: shouldReturnJson ? { type: "json_object" } : undefined
     });
     
-    // Extraer y devolver la respuesta
-    return completion.choices[0].message.content;
+    // Extraer la respuesta
+    let response = completion.choices[0].message.content;
+
+    // Si se espera JSON, limpiar y validar el formato
+    if (shouldReturnJson) {
+      try {
+        response = cleanJsonResponse(response);
+      } catch (error) {
+        logger.error('Error al procesar respuesta JSON de OpenAI:', error);
+        // En caso de error de formato, devolver un JSON por defecto
+        return JSON.stringify({
+          error: 'Error al procesar respuesta',
+          fallback: true,
+          originalResponse: response
+        });
+      }
+    }
+
+    return response;
   } catch (error) {
     logger.error('Error al generar respuesta con OpenAI:', error);
+    
+    if (error.response?.status === 429) {
+      logger.error('Error de límite de tasa en OpenAI');
+      throw new Error('Límite de tasa excedido en OpenAI');
+    }
     
     // En caso de error, usar respuesta simulada
     return generateMockResponse(message);
@@ -182,9 +283,9 @@ async function analyzeResponseRelevance(question, answer) {
     
     // Llamar a la API de OpenAI
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: 'gpt-4',
       messages: messages,
-      temperature: 0.3,
+      temperature: 0.1,
       max_tokens: 500,
       response_format: { type: "json_object" }
     });
@@ -205,7 +306,68 @@ async function analyzeResponseRelevance(question, answer) {
   }
 }
 
+/**
+ * Analiza el tipo de prospecto y su potencial
+ * @param {Object} prospectData - Datos del prospecto
+ * @returns {Promise<Object>} - Análisis del prospecto
+ */
+async function analyzeProspect(prospectData) {
+  try {
+    if (!openai) {
+      return generateMockProspectAnalysis();
+    }
+
+    const messages = [
+      {
+        role: 'system',
+        content: `${KNOWLEDGE_BASE}\n\nEres un experto en calificación de prospectos B2B para una solución empresarial de control de fatiga. Analiza la información proporcionada y determina el tipo de prospecto, su potencial y la siguiente acción recomendada.`
+      },
+      {
+        role: 'user',
+        content: `Analiza este prospecto:
+        Nombre: ${prospectData.name}
+        Empresa: ${prospectData.company}
+        Cargo: ${prospectData.position || 'No especificado'}
+        Campaña: ${prospectData.campaignType}
+        Mensaje inicial: ${prospectData.initialMessage}
+        Información adicional: ${prospectData.companyInfo ? JSON.stringify(prospectData.companyInfo) : 'No disponible'}
+        
+        Determina:
+        1. Tipo de prospecto (CURIOSO, INFLUENCER, ENCARGADO)
+        2. Potencial (ALTO, MEDIO, BAJO)
+        3. Siguiente acción recomendada
+        4. Razones del análisis
+        
+        Responde en formato JSON.`
+      }
+    ];
+
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: messages,
+      temperature: 0.1,
+      max_tokens: 500,
+      response_format: { type: "json_object" }
+    });
+
+    return JSON.parse(completion.choices[0].message.content);
+  } catch (error) {
+    logger.error('Error al analizar prospecto:', error);
+    return generateMockProspectAnalysis();
+  }
+}
+
+function generateMockProspectAnalysis() {
+  return {
+    prospectType: ['CURIOSO', 'INFLUENCER', 'ENCARGADO'][Math.floor(Math.random() * 3)],
+    potential: ['ALTO', 'MEDIO', 'BAJO'][Math.floor(Math.random() * 3)],
+    nextAction: ['REUNIÓN', 'EDUCAR', 'NUTRIR', 'DESCARTAR'][Math.floor(Math.random() * 4)],
+    reasoning: 'Análisis simulado para modo de prueba'
+  };
+}
+
 module.exports = {
   generateOpenAIResponse,
-  analyzeResponseRelevance
+  analyzeResponseRelevance,
+  analyzeProspect
 }; 
