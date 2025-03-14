@@ -138,6 +138,39 @@ function generateMockResponse(message) {
 }
 
 /**
+ * Limpia una respuesta de OpenAI para asegurar que es un JSON válido
+ * @param {string} response - Respuesta de OpenAI
+ * @returns {string} - JSON limpio
+ */
+function cleanJsonResponse(response) {
+  try {
+    // Remover cualquier markdown o texto antes/después del JSON
+    let cleaned = response.trim();
+    
+    // Si la respuesta está envuelta en backticks, removerlos
+    if (cleaned.startsWith('```json')) {
+      cleaned = cleaned.substring(7);
+    } else if (cleaned.startsWith('```')) {
+      cleaned = cleaned.substring(3);
+    }
+    if (cleaned.endsWith('```')) {
+      cleaned = cleaned.substring(0, cleaned.length - 3);
+    }
+    
+    // Limpiar espacios y saltos de línea
+    cleaned = cleaned.trim();
+    
+    // Validar que es un JSON válido
+    JSON.parse(cleaned);
+    
+    return cleaned;
+  } catch (error) {
+    logger.error('Error al limpiar respuesta JSON:', error);
+    throw new Error('No se pudo limpiar la respuesta JSON');
+  }
+}
+
+/**
  * Genera una respuesta usando OpenAI
  * @param {Object} message - Mensaje a enviar a OpenAI
  * @returns {Promise<string>} - Respuesta generada
@@ -161,19 +194,47 @@ async function generateOpenAIResponse(message) {
     if (message) {
       messages.push(message);
     }
+
+    // Determinar si la respuesta debe ser JSON
+    const shouldReturnJson = message.content.includes('JSON') || 
+                           message.content.includes('json') ||
+                           message.content.toLowerCase().includes('formato json');
     
     // Llamar a la API de OpenAI
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',  // Puedes cambiar a un modelo más económico como 'gpt-3.5-turbo'
+      model: 'gpt-4',
       messages: messages,
-      temperature: 0.7,
-      max_tokens: 500
+      temperature: shouldReturnJson ? 0.1 : 0.7,
+      max_tokens: 500,
+      response_format: shouldReturnJson ? { type: "json_object" } : undefined
     });
     
-    // Extraer y devolver la respuesta
-    return completion.choices[0].message.content;
+    // Extraer la respuesta
+    let response = completion.choices[0].message.content;
+
+    // Si se espera JSON, limpiar y validar el formato
+    if (shouldReturnJson) {
+      try {
+        response = cleanJsonResponse(response);
+      } catch (error) {
+        logger.error('Error al procesar respuesta JSON de OpenAI:', error);
+        // En caso de error de formato, devolver un JSON por defecto
+        return JSON.stringify({
+          error: 'Error al procesar respuesta',
+          fallback: true,
+          originalResponse: response
+        });
+      }
+    }
+
+    return response;
   } catch (error) {
     logger.error('Error al generar respuesta con OpenAI:', error);
+    
+    if (error.response?.status === 429) {
+      logger.error('Error de límite de tasa en OpenAI');
+      throw new Error('Límite de tasa excedido en OpenAI');
+    }
     
     // En caso de error, usar respuesta simulada
     return generateMockResponse(message);
@@ -222,9 +283,9 @@ async function analyzeResponseRelevance(question, answer) {
     
     // Llamar a la API de OpenAI
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',
+      model: 'gpt-4',
       messages: messages,
-      temperature: 0.3,
+      temperature: 0.1,
       max_tokens: 500,
       response_format: { type: "json_object" }
     });
@@ -284,7 +345,7 @@ async function analyzeProspect(prospectData) {
     const completion = await openai.chat.completions.create({
       model: 'gpt-4',
       messages: messages,
-      temperature: 0.3,
+      temperature: 0.1,
       max_tokens: 500,
       response_format: { type: "json_object" }
     });

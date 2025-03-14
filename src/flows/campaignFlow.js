@@ -1,7 +1,9 @@
 const { generateOpenAIResponse, analyzeResponseRelevance } = require('../services/openaiService');
 const { checkCalendarAvailability, createCalendarEvent } = require('../services/calendarService');
-const { searchCompanyInfo } = require('../services/companyService');
+const { searchCompanyInfo, searchCompanyByName } = require('../services/companyService');
 const { sendAppointmentToMake, formatAppointmentData } = require('../services/webhookService');
+const { humanizeResponse } = require('../utils/humanizer');
+const greetingFlow = require('./greetingFlow');
 const moment = require('moment-timezone');
 const logger = require('../utils/logger');
 
@@ -41,198 +43,352 @@ class CampaignFlow {
         '¿Tienen un presupuesto asignado para soluciones de seguridad este año?'
       ]
     };
+
+    // Historial de mensajes para mantener contexto
+    this.messageHistory = new Map();
+
+    // Patrones para identificar mensajes de campaña
+    this.campaignPatterns = {
+      FACEBOOK: [
+        /necesito más información/i,
+        /información sobre esta oferta/i,
+        /me interesa saber más/i,
+        /quiero saber más/i,
+        /información sobre el precio/i,
+        /el precio/i
+      ],
+      GENERAL: [
+        /oferta flash/i,
+        /descuento/i,
+        /promoción/i,
+        /smart bands?/i,
+        /fatiga/i,
+        /somnolencia/i
+      ]
+    };
+
+    // Patrones para clasificar tipos de prospecto
+    this.prospectTypePatterns = {
+      INDEPENDIENTE: [
+        /personal/i,
+        /independiente/i,
+        /particular/i,
+        /individual/i,
+        /por mi cuenta/i,
+        /conductor/i
+      ]
+    };
   }
 
-  /**
-   * Procesa un mensaje entrante y genera una respuesta según el estado de la conversación
-   * @param {Object} prospectState - Estado actual del prospecto
-   * @param {string} message - Mensaje recibido
-   * @returns {Promise<Object>} - Respuesta y nuevo estado
-   */
-  async processMessage(prospectState, message) {
-    // Si es un nuevo prospecto, inicializar estado
-    if (!prospectState.conversationState) {
-      return this.handleNewProspect(prospectState, message);
+  addToHistory = (phoneNumber, message) => {
+    if (!this.messageHistory.has(phoneNumber)) {
+      this.messageHistory.set(phoneNumber, []);
     }
+    this.messageHistory.get(phoneNumber).push({
+      ...message,
+      timestamp: new Date()
+    });
+  };
 
-    // Procesar según el estado actual
-    switch (prospectState.conversationState) {
-      case this.states.GREETING:
-        return this.handleGreeting(prospectState, message);
-      
-      case this.states.INITIAL_QUALIFICATION:
-        return this.handleInitialQualification(prospectState, message);
-      
-      case this.states.DEEP_QUALIFICATION:
-        return this.handleDeepQualification(prospectState, message);
-      
-      case this.states.MEETING_OFFER:
-        return this.handleMeetingOffer(prospectState, message);
-      
-      case this.states.MEETING_SCHEDULING:
-        return this.handleMeetingScheduling(prospectState, message);
-      
-      case this.states.EMAIL_COLLECTION:
-        return this.handleEmailCollection(prospectState, message);
-      
-      case this.states.FOLLOW_UP:
-        return this.handleFollowUp(prospectState, message);
-      
-      default:
-        // Usar OpenAI para generar una respuesta general
-        const response = await generateOpenAIResponse({
-          role: 'user',
+  getHistory = (phoneNumber) => {
+    return this.messageHistory.get(phoneNumber) || [];
+  };
+
+  processMessage = async (prospectState, message) => {
+    try {
+      // Agregar mensaje al historial
+      if (prospectState.phoneNumber) {
+        this.addToHistory(prospectState.phoneNumber, {
+          type: 'received',
           content: message
         });
+      }
+
+      let result;
+
+      // Si es un nuevo prospecto o está en estado greeting, usar greetingFlow
+      if (!prospectState.conversationState || prospectState.conversationState === this.states.GREETING) {
+        result = await greetingFlow.handleInitialGreeting(message, prospectState);
+      } else {
+        // Procesar según el estado actual
+        switch (prospectState.conversationState) {
+          case this.states.INITIAL_QUALIFICATION:
+            result = await this.handleInitialQualification(prospectState, message);
+            break;
+          
+          case this.states.DEEP_QUALIFICATION:
+            result = await this.handleDeepQualification(prospectState, message);
+            break;
+          
+          case this.states.MEETING_OFFER:
+            result = await this.handleMeetingOffer(prospectState, message);
+            break;
+          
+          case this.states.MEETING_SCHEDULING:
+            result = await this.handleMeetingScheduling(prospectState, message);
+            break;
+          
+          case this.states.EMAIL_COLLECTION:
+            result = await this.handleEmailCollection(prospectState, message);
+            break;
+          
+          case this.states.FOLLOW_UP:
+            result = await this.handleFollowUp(prospectState, message);
+            break;
+          
+          default:
+            // Usar OpenAI para generar una respuesta general
+            const aiResponse = await generateOpenAIResponse({
+              role: 'user',
+              content: message
+            });
+            result = {
+              response: aiResponse,
+              newState: prospectState
+            };
+        }
+      }
+
+      // Humanizar la respuesta
+      const humanizedChunks = await humanizeResponse(result.response);
+      
+      // Registrar la respuesta en el historial
+      if (prospectState.phoneNumber) {
+        this.addToHistory(prospectState.phoneNumber, {
+          type: 'sent',
+          content: result.response
+        });
+      }
+
+      // Registrar para depuración
+      logger.info(`Estado: ${result.newState.conversationState}, Respuesta: ${result.response.substring(0, 50)}...`);
+      
+      return {
+        ...result,
+        humanizedResponse: humanizedChunks
+      };
+    } catch (error) {
+      logger.error('Error en processMessage:', error);
+      return greetingFlow.handleInitialGreeting(message, prospectState);
+    }
+  };
+
+  identifyCampaign = (prospectState, message) => {
+    try {
+      // Verificar si el mensaje contiene una imagen o es un mensaje reenviado
+      const isForwarded = /forwarded|reenviado/i.test(message);
+      
+      // Verificar si es un enlace de Facebook o una imagen
+      const isFacebookLink = /fb\.me|facebook\.com/i.test(message);
+      const hasImage = /image|imagen|photo|foto/i.test(message);
+      
+      // Obtener historial completo
+      const history = prospectState.phoneNumber ? this.getHistory(prospectState.phoneNumber) : [];
+      const allMessages = [...history.map(m => m.content), message].join('\n');
+
+      // Verificar patrones de Facebook
+      const isFacebookCampaign = this.campaignPatterns.FACEBOOK.some(pattern => 
+        pattern.test(allMessages)
+      ) || isForwarded || isFacebookLink;
+
+      // Verificar patrones generales
+      const isGeneralCampaign = this.campaignPatterns.GENERAL.some(pattern => 
+        pattern.test(allMessages)
+      ) || isForwarded || hasImage || isFacebookLink;
+
+      // Extraer palabras clave
+      const keywords = this.extractCampaignKeywords(allMessages);
+
+      // Si hay enlaces de Facebook, asumir que es una campaña
+      if (isFacebookLink) {
+        keywords.push('oferta');
+        keywords.push('smart band');
+      }
+
+      return {
+        source: isFacebookCampaign ? 'FACEBOOK' : 'GENERAL',
+        type: isGeneralCampaign ? 'CAMPAIGN' : 'ORGANIC',
+        keywords: keywords,
+        isForwarded: isForwarded,
+        hasImage: hasImage,
+        isFacebookLink: isFacebookLink
+      };
+    } catch (error) {
+      logger.error('Error al identificar campaña:', error);
+      return {
+        source: 'GENERAL',
+        type: 'ORGANIC',
+        keywords: []
+      };
+    }
+  };
+
+  extractCampaignKeywords = (text) => {
+    const keywords = [];
+    const patterns = [
+      /smart\s*bands?/i,
+      /fatiga/i,
+      /somnolencia/i,
+      /seguridad/i,
+      /conductor(?:es)?/i,
+      /flota/i,
+      /precio/i,
+      /oferta/i,
+      /descuento/i
+    ];
+
+    patterns.forEach(pattern => {
+      const match = text.match(pattern);
+      if (match) {
+        keywords.push(match[0].toLowerCase());
+      }
+    });
+
+    return [...new Set(keywords)]; // Eliminar duplicados
+  };
+
+  extractNameAndCompany = (message) => {
+    let name = null;
+    let company = null;
+    
+    // Convertir mensaje a minúsculas para comparación
+    const lowerMessage = message.toLowerCase();
+    
+    // Patrones para detectar nombres
+    const namePatterns = [
+      /(?:me llamo|soy) ([^,]+)(?:,|\sy)/i,
+      /(?:me llamo|soy) ([^,]+)(?:$|,)/i,
+      /(?:^|\s)([^,]+)(?:,\s*(?:de|gerente|conductor|trabajo|trabajando))(?:\s+en|\s+de)?/i
+    ];
+
+    // Patrones para detectar empresas
+    const companyPatterns = [
+      /(?:trabajo en|trabajando en|empresa|de la empresa)\s+([^,.]+)/i,
+      /(?:gerente|conductor)\s+(?:en|de)\s+([^,.]+)/i,
+      /(?:,\s*de\s+)([^,.]+)/i
+    ];
+
+    // Buscar nombre
+    for (const pattern of namePatterns) {
+      const match = message.match(pattern);
+      if (match && match[1]) {
+        name = match[1].trim();
+        break;
+      }
+    }
+
+    // Buscar empresa
+    for (const pattern of companyPatterns) {
+      const match = message.match(pattern);
+      if (match && match[1]) {
+        company = match[1].trim();
+        break;
+      }
+    }
+
+    // Limpiar el nombre
+    if (name) {
+      // Remover palabras comunes y cargos
+      const wordsToRemove = [
+        'soy', 'me', 'llamo', 'trabajo', 'en', 'de', 'la', 'empresa',
+        'gerente', 'conductor', 'operaciones', 'independiente'
+      ];
+      name = name.split(' ')
+        .filter(word => !wordsToRemove.includes(word.toLowerCase()))
+        .join(' ')
+        .trim();
+    }
+
+    // Limpiar la empresa
+    if (company) {
+      // Remover palabras comunes
+      const companyWordsToRemove = [
+        'la', 'empresa', 'en', 'de', 'operaciones'
+      ];
+      company = company.split(' ')
+        .filter(word => !companyWordsToRemove.includes(word.toLowerCase()))
+        .join(' ')
+        .trim();
+    }
+
+    // Manejar caso de conductor independiente
+    if (lowerMessage.includes('conductor independiente')) {
+      company = 'Independiente/Personal';
+    }
+
+    return { name, company };
+  };
+
+  handleInitialQualification = async (prospectState, message) => {
+    try {
+      // Si no hay pregunta actual, establecer la primera
+      if (!prospectState.currentQuestion) {
+        const questions = this.qualificationQuestions[prospectState.prospectType || 'CURIOSO'];
+        prospectState.currentQuestion = questions[0];
+      }
+
+      // Analizar la relevancia de la respuesta
+      const relevanceAnalysis = await analyzeResponseRelevance(message, prospectState.currentQuestion);
+      
+      if (relevanceAnalysis.isRelevant) {
+        // Guardar la respuesta
+        if (!prospectState.qualificationAnswers) {
+          prospectState.qualificationAnswers = {};
+        }
+        prospectState.qualificationAnswers[prospectState.currentQuestion] = message;
+
+        // Determinar siguiente pregunta
+        const questions = this.qualificationQuestions[prospectState.prospectType || 'CURIOSO'];
+        const currentIndex = questions.indexOf(prospectState.currentQuestion);
         
+        if (currentIndex < questions.length - 1) {
+          // Pasar a la siguiente pregunta
+          prospectState.currentQuestion = questions[currentIndex + 1];
+          
+          return {
+            response: prospectState.currentQuestion,
+            newState: prospectState
+          };
+        } else {
+          // Finalizar calificación inicial
+          delete prospectState.currentQuestion;
+          
+          // Si es CURIOSO, terminar con mensaje educativo
+          if (prospectState.prospectType === 'CURIOSO') {
+            prospectState.conversationState = this.states.COMPLETED;
+            return {
+              response: `Gracias por tu interés. Te comparto información sobre cómo nuestro sistema ayuda a prevenir accidentes por fatiga:\n\n` +
+                       `• Monitoreo en tiempo real del estado del conductor\n` +
+                       `• Alertas preventivas antes de que ocurra un microsueño\n` +
+                       `• Reportes y análisis de patrones de fatiga\n\n` +
+                       `Si en el futuro trabajas con una empresa de transporte, no dudes en contactarnos nuevamente.`,
+              newState: prospectState
+            };
+          }
+          
+          // Para otros tipos, pasar a calificación profunda
+          prospectState.conversationState = this.states.DEEP_QUALIFICATION;
+          prospectState.currentQuestion = this.qualificationQuestions.ENCARGADO[0];
+          
+          return {
+            response: `Gracias por la información. Me gustaría hacerte algunas preguntas más específicas para entender mejor cómo podemos ayudar a ${prospectState.company}.\n\n${prospectState.currentQuestion}`,
+            newState: prospectState
+          };
+        }
+      } else {
+        // Si la respuesta no es relevante, repetir la pregunta
         return {
-          response,
+          response: `Disculpa, no pude entender bien tu respuesta. ¿Podrías responder específicamente a esta pregunta?\n\n${prospectState.currentQuestion}`,
           newState: prospectState
         };
-    }
-  }
-
-  /**
-   * Maneja un nuevo prospecto
-   * @param {Object} prospectState - Estado inicial del prospecto
-   * @param {string} message - Mensaje recibido
-   * @returns {Promise<Object>} - Respuesta y nuevo estado
-   */
-  async handleNewProspect(prospectState, message) {
-    // Identificar la campaña por palabras clave
-    const campaignType = this.identifyCampaign(message);
-    
-    // Obtener nombre del vendedor desde variables de entorno
-    const vendedorNombre = process.env.VENDEDOR_NOMBRE || 'Roberto Calvo';
-    
-    // Respuesta de saludo personalizada según la campaña
-    const greeting = `¡Hola! 👋😊 Soy ${vendedorNombre}, tu Asesor Comercial en LogiFit. ¡Será un placer acompañarte en este recorrido! 
-
-¿Me ayudas compartiendo tu nombre, cargo y el de tu empresa, por favor? 📦🚀`;
-
-    // Actualizar estado
-    const newState = {
-      ...prospectState,
-      conversationState: this.states.GREETING,
-      campaignType,
-      initialMessage: message,
-      qualificationStep: 0,
-      qualificationAnswers: {},
-      lastInteraction: new Date()
-    };
-    
-    return {
-      response: greeting,
-      newState
-    };
-  }
-
-  /**
-   * Maneja la respuesta al saludo inicial
-   * @param {Object} prospectState - Estado del prospecto
-   * @param {string} message - Mensaje recibido
-   * @returns {Promise<Object>} - Respuesta y nuevo estado
-   */
-  async handleGreeting(prospectState, message) {
-    // Extraer información básica
-    const extractedInfo = await this.extractProspectInfo(message);
-    
-    // Buscar información de la empresa
-    let companyInfo = null;
-    if (extractedInfo.company) {
-      companyInfo = await this.searchCompanyInfo(extractedInfo.company);
-    }
-    
-    // Analizar el tipo de prospecto
-    const prospectAnalysis = await this.analyzeProspect({
-      ...extractedInfo,
-      companyInfo,
-      campaignType: prospectState.campaignType,
-      initialMessage: prospectState.initialMessage
-    });
-    
-    // Seleccionar siguiente pregunta basada en el tipo de prospecto
-    const questions = this.qualificationQuestions[prospectAnalysis.prospectType];
-    const nextQuestion = questions[0];
-    
-    let response;
-    let nextState;
-    
-    // Si el potencial es BAJO y es CURIOSO, dar respuesta educativa
-    if (prospectAnalysis.potential === 'BAJO' && prospectAnalysis.prospectType === 'CURIOSO') {
-      response = `Gracias ${extractedInfo.name}. Entiendo que estás interesado en nuestras soluciones de control de fatiga. 
-      
-Te comento que LogiFit es una solución empresarial especializada en flotas de transporte. ¿Te gustaría conocer más sobre cómo podemos ayudar a tu empresa a prevenir accidentes por fatiga?`;
-      nextState = this.states.FOLLOW_UP;
-    } else {
-      // Para prospectos con potencial, continuar con calificación
-      response = `Gracias ${extractedInfo.name}. Me gustaría entender mejor sus necesidades para poder asesorarle adecuadamente.
-
-${nextQuestion}`;
-      nextState = this.states.DEEP_QUALIFICATION;
-    }
-    
-    // Actualizar estado
-    const newState = {
-      ...prospectState,
-      ...extractedInfo,
-      companyInfo,
-      prospectType: prospectAnalysis.prospectType,
-      potential: prospectAnalysis.potential,
-      nextAction: prospectAnalysis.nextAction,
-      analysisReasoning: prospectAnalysis.reasoning,
-      conversationState: nextState,
-      qualificationStep: 1,
-      lastInteraction: new Date()
-    };
-    
-    return {
-      response,
-      newState
-    };
-  }
-
-  /**
-   * Extrae información del prospecto del mensaje
-   * @param {string} message - Mensaje del prospecto
-   * @returns {Promise<Object>} - Información extraída
-   */
-  async extractProspectInfo(message) {
-    try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4',
-        messages: [
-          {
-            role: 'system',
-            content: 'Extrae el nombre, cargo y empresa del mensaje. Si no encuentras algún dato, marca como null. Responde en formato JSON.'
-          },
-          {
-            role: 'user',
-            content: message
-          }
-        ],
-        temperature: 0.3,
-        response_format: { type: "json_object" }
-      });
-
-      return JSON.parse(completion.choices[0].message.content);
+      }
     } catch (error) {
-      logger.error('Error al extraer información del prospecto:', error);
-      return {
-        name: null,
-        position: null,
-        company: null
-      };
+      logger.error('Error en handleInitialQualification:', error);
+      throw error;
     }
-  }
+  };
 
-  /**
-   * Maneja la respuesta a la calificación inicial
-   * @param {Object} prospectState - Estado del prospecto
-   * @param {string} message - Mensaje recibido
-   * @returns {Promise<Object>} - Respuesta y nuevo estado
-   */
-  async handleInitialQualification(prospectState, message) {
+  handleDeepQualification = async (prospectState, message) => {
     // Obtener la pregunta actual
     const currentQuestion = this.qualificationQuestions[prospectState.prospectType][prospectState.qualificationStep - 1];
     
@@ -316,107 +472,9 @@ ${nextQuestion}`;
         newState
       };
     }
-  }
+  };
 
-  /**
-   * Maneja la respuesta a la calificación profunda
-   * @param {Object} prospectState - Estado del prospecto
-   * @param {string} message - Mensaje recibido
-   * @returns {Promise<Object>} - Respuesta y nuevo estado
-   */
-  async handleDeepQualification(prospectState, message) {
-    // Obtener la pregunta actual
-    const currentQuestion = this.qualificationQuestions[prospectState.prospectType][prospectState.qualificationStep - 1];
-    
-    // Analizar si la respuesta es relevante a la pregunta actual
-    const relevanceAnalysis = await analyzeResponseRelevance(currentQuestion, message);
-    
-    // Si la respuesta no es relevante, manejarla de forma especial
-    if (!relevanceAnalysis.isRelevant) {
-      logger.info(`Respuesta no relevante detectada: "${message}" para pregunta: "${currentQuestion}"`);
-      console.log(`Respuesta no relevante detectada. Razonamiento: ${relevanceAnalysis.reasoning}`);
-      
-      // Si no debemos continuar con el flujo normal, responder según la sugerencia
-      if (!relevanceAnalysis.shouldContinue) {
-        return {
-          response: relevanceAnalysis.suggestedResponse,
-          newState: prospectState // Mantener el mismo estado para repetir la pregunta después
-        };
-      }
-      
-      // Si a pesar de no ser relevante debemos continuar, añadir una nota y seguir
-      console.log('Continuando con el flujo normal a pesar de respuesta no relevante');
-    }
-    
-    // Guardar respuesta a la pregunta actual
-    const qualificationAnswers = {
-      ...prospectState.qualificationAnswers,
-      [currentQuestion]: message
-    };
-    
-    // Verificar si hay más preguntas
-    if (prospectState.qualificationStep < this.qualificationQuestions[prospectState.prospectType].length) {
-      // Siguiente pregunta
-      const nextQuestion = this.qualificationQuestions[prospectState.prospectType][prospectState.qualificationStep];
-      
-      // Actualizar estado
-      const newState = {
-        ...prospectState,
-        qualificationAnswers,
-        qualificationStep: prospectState.qualificationStep + 1,
-        lastInteraction: new Date()
-      };
-      
-      return {
-        response: nextQuestion,
-        newState
-      };
-    } else {
-      // Analizar interés con OpenAI
-      const analysis = await this.analyzeInterest(qualificationAnswers);
-      
-      let response;
-      let nextState;
-      
-      // Si hay interés, ofrecer una reunión
-      if (analysis.shouldOfferAppointment) {
-        response = `Gracias por tus respuestas, ${prospectState.name}. 
-
-¿Tienes 20 minutos para explicarte cómo funciona nuestro sistema de control de fatiga y somnolencia? Podemos agendar una llamada rápida.`;
-        
-        nextState = this.states.MEETING_OFFER;
-      } else {
-        // Si no hay suficiente interés, hacer una pregunta general
-        response = `Gracias por tus respuestas, ${prospectState.name}.
-
-¿Hay algo específico sobre nuestro sistema de control de fatiga y somnolencia que te gustaría conocer?`;
-        
-        nextState = this.states.FOLLOW_UP;
-      }
-      
-      // Actualizar estado
-      const newState = {
-        ...prospectState,
-        qualificationAnswers,
-        conversationState: nextState,
-        interestAnalysis: analysis,
-        lastInteraction: new Date()
-      };
-      
-      return {
-        response,
-        newState
-      };
-    }
-  }
-
-  /**
-   * Maneja la respuesta a la oferta de reunión
-   * @param {Object} prospectState - Estado del prospecto
-   * @param {string} message - Mensaje recibido
-   * @returns {Promise<Object>} - Respuesta y nuevo estado
-   */
-  async handleMeetingOffer(prospectState, message) {
+  handleMeetingOffer = async (prospectState, message) => {
     // Analizar si la respuesta es positiva
     const isPositive = this.isPositiveResponse(message);
     
@@ -456,15 +514,9 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
         newState
       };
     }
-  }
+  };
 
-  /**
-   * Maneja la programación de la reunión
-   * @param {Object} prospectState - Estado del prospecto
-   * @param {string} message - Mensaje recibido
-   * @returns {Promise<Object>} - Respuesta y nuevo estado
-   */
-  async handleMeetingScheduling(prospectState, message) {
+  handleMeetingScheduling = async (prospectState, message) => {
     // Interpretar la selección de horario
     const selectedTime = prospectState.suggestedTime || this.extractTimeFromMessage(message);
     
@@ -504,15 +556,9 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
         newState
       };
     }
-  }
+  };
 
-  /**
-   * Maneja la recolección de correo electrónico
-   * @param {Object} prospectState - Estado del prospecto
-   * @param {string} message - Mensaje recibido
-   * @returns {Promise<Object>} - Respuesta y nuevo estado
-   */
-  async handleEmailCollection(prospectState, message) {
+  handleEmailCollection = async (prospectState, message) => {
     // Extraer correos electrónicos
     const emails = this.extractEmails(message);
     
@@ -561,7 +607,7 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
         const response = `¡Listo! He programado la reunión para ${date} a las ${time}.
 
 🚀 ¡Únete a nuestra sesión de Logifit! ✨ Logifit es una moderna herramienta tecnológica inteligente adecuada para la gestión del descanso y salud de los colaboradores. Brindamos servicios de monitoreo preventivo como apoyo a la mejora de la salud y prevención de accidentes, con la finalidad de salvaguardar la vida de los trabajadores y ayudarles a alcanzar el máximo de su productividad en el proyecto.
-✨🌟🌞 ¡Tu bienestar es nuestra prioridad! ⚒️👍
+✨🌞 ¡Tu bienestar es nuestra prioridad! ⚒️👍
 
 Te he enviado una invitación por correo electrónico con los detalles y el enlace para la llamada.
 
@@ -601,15 +647,9 @@ Por favor, confirma que has recibido la invitación respondiendo "Confirmado" o 
         newState: prospectState
       };
     }
-  }
+  };
 
-  /**
-   * Maneja el seguimiento después de la calificación
-   * @param {Object} prospectState - Estado del prospecto
-   * @param {string} message - Mensaje recibido
-   * @returns {Promise<Object>} - Respuesta y nuevo estado
-   */
-  async handleFollowUp(prospectState, message) {
+  handleFollowUp = async (prospectState, message) => {
     // Verificar si ya se creó una cita y estamos esperando confirmación
     if (prospectState.appointmentCreated) {
       // Verificar si el mensaje es una confirmación
@@ -671,14 +711,9 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
       response,
       newState
     };
-  }
+  };
 
-  /**
-   * Analiza el interés del prospecto
-   * @param {Object} qualificationAnswers - Respuestas a las preguntas de calificación
-   * @returns {Promise<Object>} - Análisis de interés
-   */
-  async analyzeInterest(qualificationAnswers) {
+  analyzeInterest = async (qualificationAnswers) => {
     const answersText = Object.entries(qualificationAnswers)
       .map(([question, answer]) => `${question}: ${answer}`)
       .join('\n');
@@ -711,28 +746,9 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
         reasoning: 'No se pudo analizar correctamente, asumiendo interés por defecto'
       };
     }
-  }
+  };
 
-  /**
-   * Identifica la campaña basada en palabras clave
-   * @param {string} message - Mensaje recibido
-   * @returns {string} - Tipo de campaña
-   */
-  identifyCampaign(message) {
-    // Implementación básica, se puede mejorar con análisis de texto
-    if (/fatiga|somnolencia|cansancio|accidente|seguridad/i.test(message)) {
-      return 'fatiga';
-    }
-    
-    return 'general';
-  }
-
-  /**
-   * Extrae el nombre del mensaje
-   * @param {string} message - Mensaje recibido
-   * @returns {string} - Nombre extraído
-   */
-  extractName(message) {
+  extractName = (message) => {
     // Implementación básica, se puede mejorar con NLP
     const words = message.split(/\s+/);
     if (words.length > 0) {
@@ -747,34 +763,19 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
     }
     
     return 'Cliente';
-  }
+  };
 
-  /**
-   * Extrae el RUC del mensaje
-   * @param {string} message - Mensaje recibido
-   * @returns {string|null} - RUC extraído o null
-   */
-  extractRUC(message) {
+  extractRUC = (message) => {
     const rucMatch = message.match(/\b\d{11}\b/);
     return rucMatch ? rucMatch[0] : null;
-  }
+  };
 
-  /**
-   * Extrae correos electrónicos del mensaje
-   * @param {string} message - Mensaje recibido
-   * @returns {Array<string>} - Correos electrónicos extraídos
-   */
-  extractEmails(message) {
+  extractEmails = (message) => {
     const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
     return message.match(emailRegex) || [];
-  }
+  };
 
-  /**
-   * Determina si una respuesta es positiva
-   * @param {string} message - Mensaje recibido
-   * @returns {boolean} - True si es positiva
-   */
-  isPositiveResponse(message) {
+  isPositiveResponse = (message) => {
     const positivePatterns = [
       /\bs[ií]\b/i,
       /\bclaro\b/i,
@@ -788,14 +789,9 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
     ];
     
     return positivePatterns.some(pattern => pattern.test(message));
-  }
+  };
 
-  /**
-   * Sugiere el horario más cercano disponible
-   * @param {string} timezone - Zona horaria del cliente
-   * @returns {string} - Horario sugerido
-   */
-  suggestNearestTime(timezone = 'America/Lima') {
+  suggestNearestTime = (timezone = 'America/Lima') => {
     // Obtener hora actual en la zona horaria del cliente
     const now = moment().tz(timezone);
     
@@ -847,14 +843,9 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
     
     // Formatear la fecha y hora
     return suggestedTime.format('YYYY-MM-DD HH:mm');
-  }
+  };
 
-  /**
-   * Extrae la hora de un mensaje
-   * @param {string} message - Mensaje recibido
-   * @returns {string|null} - Hora extraída o null
-   */
-  extractTimeFromMessage(message) {
+  extractTimeFromMessage = (message) => {
     // Patrones para diferentes formatos de hora
     const patterns = [
       // Formato "hoy a las HH:MM"
@@ -900,15 +891,9 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
     }
     
     return null;
-  }
+  };
 
-  /**
-   * Parsea la hora seleccionada
-   * @param {string} selectedTime - Hora seleccionada en formato YYYY-MM-DD HH:MM
-   * @param {string} timezone - Zona horaria del cliente
-   * @returns {Object} - Fecha, hora y fecha-hora
-   */
-  parseSelectedTime(selectedTime, timezone = 'America/Lima') {
+  parseSelectedTime = (selectedTime, timezone = 'America/Lima') => {
     try {
       // Si no hay hora seleccionada, usar la hora actual + 1 hora
       if (!selectedTime) {
@@ -941,7 +926,7 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
         dateTime: now.clone().tz('UTC').format()
       };
     }
-  }
+  };
 }
 
 module.exports = new CampaignFlow(); 

@@ -10,56 +10,100 @@ let prospectState = {
 };
 
 // Mensajes de prueba para simular una conversación
-const testMessages = [
-  // Mensaje inicial (simulando que viene de una campaña de Facebook)
-  'Hola, vi su anuncio en Facebook sobre el sistema de control de fatiga',
-  
-  // Respuesta al saludo
-  'Mi nombre es Juan Pérez, soy gerente de operaciones',
-  
-  // Respuestas a las preguntas de calificación
-  'No, nunca hemos usado un sistema así',
-  
-  // Respuesta a la segunda pregunta
-  '25 unidades',
-  
-  // Respuesta a la tercera pregunta
-  'Hemos tenido algunos incidentes por conductores cansados',
-  
-  // Respuesta a la oferta de reunión
-  'Sí, me gustaría saber más',
-  
-  // Respuesta a la sugerencia de horario
-  'Perfecto, a esa hora está bien',
-  
-  // Respuesta con correo electrónico
-  'Mi correo es juan.perez@empresa.com, también puede incluir a carlos@empresa.com'
+const testCases = [
+  {
+    description: 'Caso 1: Mensaje con enlace de Facebook',
+    messages: [
+      'https://fb.me/5gR5baubr',
+      'Me llamo Juan y trabajo en Transportes ABC'
+    ]
+  },
+  {
+    description: 'Caso 2: Mensaje reenviado',
+    messages: [
+      'Forwarded\nOferta Flash! Smart Bands con 10% de descuento',
+      'Soy Pedro López de la empresa XYZ Logistics'
+    ]
+  },
+  {
+    description: 'Caso 3: Conductor independiente',
+    messages: [
+      'Hola, me interesa el sistema',
+      'Soy conductor independiente',
+      'Me interesa saber más sobre el sistema'
+    ]
+  },
+  {
+    description: 'Caso 4: Prospecto de empresa',
+    messages: [
+      'Hola, vi su anuncio',
+      'Soy Carlos Ruiz, gerente de operaciones en ABC Transportes',
+      'Tenemos 30 unidades',
+      'Sí, hemos tenido algunos incidentes',
+      'Sí, me interesa una reunión',
+      'Mi correo es carlos@abc.com'
+    ]
+  }
 ];
 
 // Función para simular la conversación
 async function simulateConversation() {
-  console.log('=== SIMULACIÓN DE CONVERSACIÓN DE CAMPAÑA ===\n');
-  
-  // Procesar cada mensaje
-  for (const message of testMessages) {
-    console.log(`Usuario: ${message}`);
+  for (const testCase of testCases) {
+    console.log('\n=== INICIANDO CASO DE PRUEBA ===');
+    console.log('Descripción:', testCase.description);
+    console.log('=====================================\n');
     
-    // Procesar mensaje
-    const result = await campaignFlow.processMessage(prospectState, message);
+    // Reiniciar estado para cada caso de prueba
+    prospectState = {
+      phoneNumber: '+51986220876',
+      createdAt: new Date(),
+      lastInteraction: new Date()
+    };
     
-    // Actualizar estado
-    prospectState = result.newState;
+    // Procesar cada mensaje del caso de prueba
+    for (const message of testCase.messages) {
+      console.log(`\nUsuario: ${message}`);
+      console.log('---');
+      
+      try {
+        // Procesar mensaje
+        const result = await campaignFlow.processMessage(prospectState, message);
+        
+        // Actualizar estado
+        prospectState = result.newState;
+        
+        // Mostrar respuesta
+        console.log('Bot:', result.response);
+        
+        // Mostrar estado actual resumido
+        console.log('\nEstado actual:');
+        console.log('- Estado:', result.newState.conversationState);
+        console.log('- Tipo de prospecto:', result.newState.prospectType || 'No definido');
+        console.log('- Nombre:', result.newState.name || 'No definido');
+        console.log('- Empresa:', result.newState.company || 'No definida');
+        console.log('- Potencial:', result.newState.potential || 'No definido');
+        
+        // Esperar un momento para simular tiempo real
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (error) {
+        console.error('Error procesando mensaje:', error);
+      }
+    }
     
-    // Mostrar respuesta
-    console.log(`Bot: ${result.response}\n`);
-    
-    // Esperar un momento para simular tiempo real
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Mostrar resumen del caso de prueba
+    console.log('\n=== RESUMEN DEL CASO DE PRUEBA ===');
+    const finalState = {
+      conversationState: prospectState.conversationState,
+      name: prospectState.name,
+      company: prospectState.company,
+      prospectType: prospectState.prospectType,
+      potential: prospectState.potential,
+      nextAction: prospectState.nextAction,
+      qualificationAnswers: prospectState.qualificationAnswers
+    };
+    console.log(JSON.stringify(finalState, null, 2));
+    console.log('=====================================\n');
   }
-  
-  // Mostrar estado final
-  console.log('=== ESTADO FINAL DEL PROSPECTO ===\n');
-  console.log(JSON.stringify(prospectState, null, 2));
 }
 
 // Ejecutar simulación
