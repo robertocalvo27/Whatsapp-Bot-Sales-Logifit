@@ -83,46 +83,35 @@ function formatProspectData(prospectData) {
     conversationState,
     lastInteraction,
     firstInteraction,
-    source = 'WhatsApp'
+    source = 'WhatsApp',
+    campaignName = 'Campaña General'
   } = prospectData;
   
   // Formatear la fecha actual
   const now = new Date();
-  const formattedDate = now.toISOString();
+  const formattedDate = now.toISOString().split('T')[0]; // Formato YYYY-MM-DD
   
-  // Crear objeto con los datos formateados
+  // Determinar si tiene cita programada
+  const hasCita = appointmentDetails && appointmentDetails.date ? 'SI' : 'NO';
+  
+  // Crear objeto con los datos formateados según la estructura de la hoja de Google Sheets
   return {
-    // Datos básicos del prospecto
-    Telefono: phoneNumber,
-    Nombre: name || 'No proporcionado',
+    // Campos exactos de la hoja de Google Sheets
+    Date: formattedDate,
+    Source: source,
+    "Nombre campaña": campaignName,
+    "Nombre Prospecto": name || 'No proporcionado',
     Empresa: company || 'No proporcionada',
-    Email: emails && emails.length > 0 ? emails[0] : 'No proporcionado',
-    
-    // Datos de calificación
-    Cargo: qualificationAnswers.role || 'No proporcionado',
-    Tamano_Flota: qualificationAnswers.fleetSize || 'No proporcionado',
-    Solucion_Actual: qualificationAnswers.currentSolution || 'No proporcionado',
-    Timeline_Decision: qualificationAnswers.decisionTimeline || 'No proporcionado',
-    
-    // Análisis de interés
-    Interes_Alto: interestAnalysis.highInterest ? 'Sí' : 'No',
-    Puntuacion_Interes: interestAnalysis.interestScore || 0,
-    Razonamiento: interestAnalysis.reasoning || 'No disponible',
-    
-    // Datos de la cita (si existe)
-    Cita_Programada: appointmentDetails.date ? 'Sí' : 'No',
-    Fecha_Cita: appointmentDetails.date || 'No programada',
-    Hora_Cita: appointmentDetails.time || 'No programada',
-    
-    // Metadatos
-    Estado_Conversacion: conversationState || 'Nuevo',
-    Fecha_Registro: formattedDate,
-    Ultima_Interaccion: lastInteraction ? new Date(lastInteraction).toISOString() : formattedDate,
-    Primera_Interaccion: firstInteraction ? new Date(firstInteraction).toISOString() : formattedDate,
-    Fuente: source,
+    Telefono: phoneNumber,
+    "Tamaño Flota": qualificationAnswers.fleetSize || 'No proporcionado',
+    "Calificacion interes": interestAnalysis.interestScore || 0,
+    "Cita (SI/NO)": hasCita,
+    Fecha: appointmentDetails.date || '',
+    Hora: appointmentDetails.time || '',
+    Estatus: conversationState || 'Nuevo',
     
     // Campos adicionales para Make.com
-    Timestamp: formattedDate,
+    Timestamp: now.toISOString(),
     Accion: 'registro_prospecto'
   };
 }
