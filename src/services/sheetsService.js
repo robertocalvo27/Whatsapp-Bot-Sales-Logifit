@@ -8,7 +8,7 @@ const axios = require('axios');
 const logger = require('../utils/logger');
 
 // URL del webhook de Make.com para la integración con Google Sheets
-const SHEETS_WEBHOOK_URL = process.env.MAKE_SHEETS_WEBHOOK_URL;
+const SHEETS_WEBHOOK_URL = process.env.GOOGLE_SHEETS_WEBHOOK_URL;
 
 /**
  * Guarda o actualiza los datos de un prospecto en Google Sheets
@@ -43,32 +43,40 @@ async function saveProspectToSheets(prospectData) {
       status = 'En Conversación';
     }
 
-    // Preparar datos para enviar al webhook
+    // Preparar datos para enviar al webhook - Asegurarse que los nombres coincidan exactamente con los campos en Make.com
     const data = {
-      Date: formattedDate,
+      Fecha: formattedDate,
       Source: prospectData.source || 'WhatsApp',
-      'Nombre campaña': prospectData.campaignName || 'Campaña WhatsApp',
-      'Nombre Prospecto': prospectData.name || 'No proporcionado',
+      campaign_name: prospectData.campaignName || 'Campaña WhatsApp',
+      Nombre_Prospecto: prospectData.name || 'No proporcionado',
       Empresa: prospectData.company || 'No proporcionada',
       Telefono: prospectData.phoneNumber || 'No proporcionado',
-      'Tamaño Flota': fleetSize,
-      'Calificacion interes': interestScore,
-      'Cita (SI/NO)': hasMeeting ? 'SI' : 'NO',
-      Fecha: hasMeeting ? prospectData.appointmentDetails?.date || '' : '',
-      Hora: hasMeeting ? prospectData.appointmentDetails?.time || '' : '',
-      Estatus: status
+      Flota: fleetSize,
+      Calificacion: interestScore,
+      Cita: hasMeeting ? 'SI' : 'NO',
+      fecha_cita: hasMeeting ? prospectData.appointmentDetails?.date || '' : '',
+      hora_cita: hasMeeting ? prospectData.appointmentDetails?.time || '' : '',
+      Estatus_cita: status,
+      // Campos adicionales para Make.com
+      Timestamp: now.toISOString(),
+      Accion: 'registro_prospecto'
     };
+
+    // Loguear los datos que se envían para depuración
+    logger.debug('Enviando datos a Google Sheets:', JSON.stringify(data, null, 2));
 
     // Enviar datos al webhook
     const response = await axios.post(process.env.GOOGLE_SHEETS_WEBHOOK_URL, data);
 
     if (response.status === 200) {
+      logger.info('Datos enviados correctamente a Google Sheets');
       return { success: true, data: response.data };
     } else {
+      logger.error(`Error al guardar en Google Sheets: ${response.statusText}`);
       return { success: false, error: `Error al guardar en Google Sheets: ${response.statusText}` };
     }
   } catch (error) {
-    console.error('Error al guardar en Google Sheets:', error);
+    logger.error('Error al guardar en Google Sheets:', error);
     return { success: false, error: error.message };
   }
 }
@@ -111,36 +119,40 @@ async function updateProspectInSheets(phoneNumber, updatedData) {
       status = 'En Conversación';
     }
 
-    // Preparar datos para enviar al webhook
+    // Preparar datos para enviar al webhook - Asegurarse que los nombres coincidan exactamente con los campos en Make.com
     const data = {
-      Date: new Date().toISOString(),
+      Fecha: new Date().toISOString(),
       Source: prospectData.source || 'WhatsApp',
-      'Nombre campaña': prospectData.campaignName || 'Campaña WhatsApp',
-      'Nombre Prospecto': prospectData.name || 'No proporcionado',
+      campaign_name: prospectData.campaignName || 'Campaña WhatsApp',
+      Nombre_Prospecto: prospectData.name || 'No proporcionado',
       Empresa: prospectData.company || 'No proporcionada',
       Telefono: phoneNumber,
-      'Tamaño Flota': fleetSize,
-      'Calificacion interes': interestScore,
-      'Cita (SI/NO)': hasMeeting ? 'SI' : 'NO',
-      Fecha: hasMeeting ? prospectData.appointmentDetails?.date || '' : '',
-      Hora: hasMeeting ? prospectData.appointmentDetails?.time || '' : '',
-      Estatus: status,
-      
+      Flota: fleetSize,
+      Calificacion: interestScore,
+      Cita: hasMeeting ? 'SI' : 'NO',
+      fecha_cita: hasMeeting ? prospectData.appointmentDetails?.date || '' : '',
+      hora_cita: hasMeeting ? prospectData.appointmentDetails?.time || '' : '',
+      Estatus_cita: status,
       // Campos adicionales para Make.com
       Timestamp: new Date().toISOString(),
       Accion: 'actualizacion_prospecto'
     };
     
+    // Loguear los datos que se envían para depuración
+    logger.debug('Actualizando datos en Google Sheets:', JSON.stringify(data, null, 2));
+    
     // Enviar datos al webhook
     const response = await axios.post(process.env.GOOGLE_SHEETS_WEBHOOK_URL, data);
     
     if (response.status === 200) {
+      logger.info('Datos actualizados correctamente en Google Sheets');
       return { success: true, data: response.data };
     } else {
+      logger.error(`Error al actualizar en Google Sheets: ${response.statusText}`);
       return { success: false, error: `Error al actualizar en Google Sheets: ${response.statusText}` };
     }
   } catch (error) {
-    console.error(`Error al actualizar datos del prospecto ${phoneNumber} en Google Sheets:`, error);
+    logger.error(`Error al actualizar datos del prospecto ${phoneNumber} en Google Sheets:`, error);
     return { success: false, error: error.message };
   }
 }
