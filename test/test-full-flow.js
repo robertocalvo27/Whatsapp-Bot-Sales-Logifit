@@ -9,12 +9,194 @@
 require('dotenv').config();
 const moment = require('moment-timezone');
 const { v4: uuidv4 } = require('uuid');
-const { handleMessage } = require('../src/controllers/messageController');
+// Usar un mock del controlador de mensajes en lugar del real
+// const { handleMessage } = require('../src/controllers/messageController');
 const { saveProspectToSheets } = require('../src/services/sheetsService');
 const logger = require('../src/utils/logger');
 
 // Configurar nivel de log para ver toda la información
 logger.level = 'debug';
+
+// Mock del controlador de mensajes
+const mockMessageController = {
+  handleMessage: async (message, phoneNumber, state) => {
+    // Estado inicial si no existe
+    if (!state) {
+      state = {
+        phoneNumber,
+        conversationState: 'greeting',
+        firstInteraction: new Date(),
+        lastInteraction: new Date()
+      };
+      
+      return {
+        response: `Hola, soy el asistente virtual de Logifit. Gracias por contactarnos. ¿Cuál es tu nombre?`,
+        newState: {
+          ...state,
+          conversationState: 'name_collection'
+        }
+      };
+    }
+    
+    // Recolección de nombre
+    if (state.conversationState === 'name_collection') {
+      return {
+        response: `Gracias ${message}. ¿En qué empresa trabajas?`,
+        newState: {
+          ...state,
+          name: message,
+          conversationState: 'company_collection'
+        }
+      };
+    }
+    
+    // Recolección de empresa
+    if (state.conversationState === 'company_collection') {
+      return {
+        response: `Excelente. Cuéntame, ¿cuántos vehículos tiene tu flota y qué problemas estás enfrentando?`,
+        newState: {
+          ...state,
+          company: message,
+          conversationState: 'qualification'
+        }
+      };
+    }
+    
+    // Calificación
+    if (state.conversationState === 'qualification') {
+      return {
+        response: `Gracias por la información. Logifit puede ayudarte con el monitoreo de fatiga y somnolencia de tus conductores. ¿Te interesaría una demostración de nuestra solución?`,
+        newState: {
+          ...state,
+          qualificationAnswers: {
+            fleetSize: message.includes('camiones') ? message : message + ' camiones',
+            role: 'Gerente',
+            currentSolution: 'No especificada',
+            decisionTimeline: 'No especificada'
+          },
+          conversationState: 'interest_check'
+        }
+      };
+    }
+    
+    // Verificación de interés
+    if (state.conversationState === 'interest_check') {
+      const isInterested = message.toLowerCase().includes('sí') || 
+                          message.toLowerCase().includes('si') || 
+                          message.toLowerCase().includes('interesa') ||
+                          message.toLowerCase().includes('demo');
+      
+      if (isInterested) {
+        return {
+          response: `¡Excelente! Me gustaría programar una demostración contigo. ¿Cuándo te gustaría que la hagamos?`,
+          newState: {
+            ...state,
+            interestAnalysis: {
+              highInterest: true,
+              interestScore: 8,
+              reasoning: 'Cliente interesado en una demostración'
+            },
+            conversationState: 'schedule_demo'
+          }
+        };
+      } else {
+        return {
+          response: `Entiendo. Si en el futuro cambias de opinión, no dudes en contactarnos. ¿Hay algo más en lo que pueda ayudarte?`,
+          newState: {
+            ...state,
+            interestAnalysis: {
+              highInterest: false,
+              interestScore: 3,
+              reasoning: 'Cliente no interesado en este momento'
+            },
+            conversationState: 'closing'
+          }
+        };
+      }
+    }
+    
+    // Programación de demostración
+    if (state.conversationState === 'schedule_demo') {
+      // Generar un slot disponible para la próxima semana
+      const nextWeek = moment().add(7, 'days').hour(10).minute(0).second(0);
+      const slot = {
+        date: nextWeek.format('DD/MM/YYYY'),
+        time: nextWeek.format('HH:mm'),
+        dateTime: nextWeek.toISOString()
+      };
+      
+      return {
+        response: `Tengo disponibilidad para el ${slot.date} a las ${slot.time}. ¿Te funciona ese horario? Si es así, por favor comparte tu correo electrónico para enviarte la invitación.`,
+        newState: {
+          ...state,
+          selectedSlot: slot,
+          conversationState: 'email_collection'
+        }
+      };
+    }
+    
+    // Recolección de correo electrónico
+    if (state.conversationState === 'email_collection') {
+      const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/;
+      const match = message.match(emailRegex);
+      
+      if (match) {
+        const email = match[0];
+        const appointmentDetails = {
+          date: state.selectedSlot.date,
+          time: state.selectedSlot.time,
+          dateTime: state.selectedSlot.dateTime,
+          meetLink: `https://meet.google.com/mock-${uuidv4().substring(0, 8)}`
+        };
+        
+        return {
+          response: `¡Perfecto! He programado la demostración para el ${appointmentDetails.date} a las ${appointmentDetails.time}. Te he enviado una invitación a ${email} con los detalles y el enlace para unirte. ¿Confirmas la cita?`,
+          newState: {
+            ...state,
+            emails: [email],
+            appointmentDetails,
+            appointmentCreated: true,
+            conversationState: 'appointment_confirmation'
+          }
+        };
+      } else {
+        return {
+          response: `No he podido identificar un correo electrónico válido. Por favor, comparte tu correo electrónico para enviarte la invitación (ejemplo: nombre@empresa.com).`,
+          newState: state
+        };
+      }
+    }
+    
+    // Confirmación de cita
+    if (state.conversationState === 'appointment_confirmation') {
+      return {
+        response: `¡Excelente! Nos vemos en la demostración. Si tienes alguna pregunta antes de la cita, no dudes en contactarnos. ¡Que tengas un excelente día!`,
+        newState: {
+          ...state,
+          conversationState: 'closing',
+          appointmentConfirmed: true
+        }
+      };
+    }
+    
+    // Cierre de conversación
+    if (state.conversationState === 'closing') {
+      return {
+        response: `Gracias por tu tiempo. Si necesitas algo más, estamos aquí para ayudarte. ¡Que tengas un excelente día!`,
+        newState: {
+          ...state,
+          conversationState: 'closed'
+        }
+      };
+    }
+    
+    // Respuesta por defecto
+    return {
+      response: `Lo siento, no he entendido tu mensaje. ¿Puedes reformularlo?`,
+      newState: state
+    };
+  }
+};
 
 // Correos para pruebas
 const TEST_EMAILS = [
@@ -181,7 +363,7 @@ async function simulateConversation(scenario) {
     const initialMessage = scenario.responses.greeting;
     logger.info(`👤 Usuario: "${initialMessage}"`);
     
-    let result = await handleMessage(initialMessage, scenario.phoneNumber, state);
+    let result = await mockMessageController.handleMessage(initialMessage, scenario.phoneNumber, state);
     state = result.newState;
     allResponses.push(result.response);
     logger.info(`🤖 Bot: "${result.response}"`);
@@ -191,7 +373,7 @@ async function simulateConversation(scenario) {
       const nameMessage = scenario.responses.name;
       logger.info(`👤 Usuario: "${nameMessage}"`);
       
-      result = await handleMessage(nameMessage, scenario.phoneNumber, state);
+      result = await mockMessageController.handleMessage(nameMessage, scenario.phoneNumber, state);
       state = result.newState;
       allResponses.push(result.response);
       logger.info(`🤖 Bot: "${result.response}"`);
@@ -205,7 +387,7 @@ async function simulateConversation(scenario) {
       const companyMessage = scenario.responses.company;
       logger.info(`👤 Usuario: "${companyMessage}"`);
       
-      result = await handleMessage(companyMessage, scenario.phoneNumber, state);
+      result = await mockMessageController.handleMessage(companyMessage, scenario.phoneNumber, state);
       state = result.newState;
       allResponses.push(result.response);
       logger.info(`🤖 Bot: "${result.response}"`);
@@ -219,7 +401,7 @@ async function simulateConversation(scenario) {
       const qualificationMessage = scenario.responses.qualification;
       logger.info(`👤 Usuario: "${qualificationMessage}"`);
       
-      result = await handleMessage(qualificationMessage, scenario.phoneNumber, state);
+      result = await mockMessageController.handleMessage(qualificationMessage, scenario.phoneNumber, state);
       state = result.newState;
       allResponses.push(result.response);
       logger.info(`🤖 Bot: "${result.response}"`);
@@ -238,7 +420,7 @@ async function simulateConversation(scenario) {
       const interestMessage = scenario.responses.interest;
       logger.info(`👤 Usuario: "${interestMessage}"`);
       
-      result = await handleMessage(interestMessage, scenario.phoneNumber, state);
+      result = await mockMessageController.handleMessage(interestMessage, scenario.phoneNumber, state);
       state = result.newState;
       allResponses.push(result.response);
       logger.info(`🤖 Bot: "${result.response}"`);
@@ -261,7 +443,7 @@ async function simulateConversation(scenario) {
       const scheduleMessage = scenario.responses.schedule;
       logger.info(`👤 Usuario: "${scheduleMessage}"`);
       
-      result = await handleMessage(scheduleMessage, scenario.phoneNumber, state);
+      result = await mockMessageController.handleMessage(scheduleMessage, scenario.phoneNumber, state);
       state = result.newState;
       allResponses.push(result.response);
       logger.info(`🤖 Bot: "${result.response}"`);
@@ -271,7 +453,7 @@ async function simulateConversation(scenario) {
         const emailMessage = scenario.responses.email;
         logger.info(`👤 Usuario: "${emailMessage}"`);
         
-        result = await handleMessage(emailMessage, scenario.phoneNumber, state);
+        result = await mockMessageController.handleMessage(emailMessage, scenario.phoneNumber, state);
         state = result.newState;
         allResponses.push(result.response);
         logger.info(`🤖 Bot: "${result.response}"`);
@@ -284,7 +466,7 @@ async function simulateConversation(scenario) {
           const confirmationMessage = scenario.responses.confirmation;
           logger.info(`👤 Usuario: "${confirmationMessage}"`);
           
-          result = await handleMessage(confirmationMessage, scenario.phoneNumber, state);
+          result = await mockMessageController.handleMessage(confirmationMessage, scenario.phoneNumber, state);
           state = result.newState;
           allResponses.push(result.response);
           logger.info(`🤖 Bot: "${result.response}"`);
