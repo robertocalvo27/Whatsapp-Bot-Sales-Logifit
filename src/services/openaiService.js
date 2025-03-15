@@ -1,5 +1,5 @@
 const OpenAI = require('openai');
-const { logger } = require('../utils/logger');
+const logger = require('../utils/logger');
 
 // Inicializar cliente de OpenAI si hay una API key válida
 let openai;
