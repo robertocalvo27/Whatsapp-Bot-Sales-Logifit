@@ -6,6 +6,9 @@
  */
 
 const { generateOpenAIResponse } = require('../services/openaiService');
+const { getNearestAvailableSlot, createCustomEvent } = require('../services/calendarService');
+const { formatAppointmentData, sendAppointmentToMake } = require('../services/webhookService');
+const { updateProspectInSheets } = require('../services/sheetsService');
 const logger = require('../utils/logger');
 const { withHumanDelayAsync } = require('../utils/humanDelay');
 const moment = require('moment-timezone');
@@ -449,9 +452,6 @@ Tenemos material informativo que podría ser útil para entender cómo nuestro s
    */
   async offerAvailableTimeSlot(prospectState) {
     try {
-      // Importar servicio de calendario
-      const { getNearestAvailableSlot } = require('../services/calendarService');
-      
       // Obtener slot disponible más cercano
       const availableSlot = await getNearestAvailableSlot(prospectState.timezone);
       
@@ -933,119 +933,111 @@ Tenemos material informativo que podría ser útil para entender cómo nuestro s
   }
 
   /**
-   * Maneja la recolección de correo electrónico para la cita
+   * Maneja la recolección del correo electrónico para la invitación
    * @param {string} message - Mensaje del usuario
-   * @param {Object} prospectState - Estado del prospecto
+   * @param {Object} state - Estado actual de la conversación
    * @returns {Promise<Object>} - Respuesta y nuevo estado
    */
-  async handleEmailCollection(message, prospectState) {
-    // Extraer correos electrónicos
-    const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/g;
-    const emails = message.match(emailRegex) || [];
-    
-    if (emails.length > 0) {
+  async handleEmailCollection(message, state) {
+    try {
+      // Extraer el correo electrónico del mensaje
+      const emailRegex = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/;
+      const match = message.match(emailRegex);
+      
+      if (!match) {
+        // No se encontró un correo electrónico válido
+        return {
+          response: "No he podido identificar un correo electrónico válido en tu mensaje. Por favor, comparte tu correo electrónico para enviarte la invitación (ejemplo: nombre@empresa.com).",
+          newState: state
+        };
+      }
+      
+      const email = match[0];
+      
+      // Guardar el correo electrónico en el estado
+      const newState = {
+        ...state,
+        emails: [...(state.emails || []), email]
+      };
+      
+      // Crear la cita en el calendario
       try {
-        // Obtener el slot seleccionado
-        const selectedSlot = prospectState.selectedSlot;
+        // Obtener detalles del slot seleccionado
+        const { selectedSlot } = newState;
         
         if (!selectedSlot) {
-          throw new Error('No se encontró información del slot seleccionado');
+          throw new Error('No se ha seleccionado un horario para la cita');
         }
         
-        // Crear detalles de la cita
-        const appointmentDetails = {
-          date: selectedSlot.date,
-          time: selectedSlot.time,
-          dateTime: selectedSlot.dateTime || moment(`${selectedSlot.date} ${selectedSlot.time}`, 'DD/MM/YYYY HH:mm').toISOString()
+        // Crear evento personalizado
+        const eventDetails = {
+          summary: `Demostración Logifit - ${newState.name || 'Prospecto'}`,
+          description: `🚀 ¡Únete a nuestra sesión de Logifit! 🚀✨ Logifit es una moderna herramienta tecnológica inteligente adecuada para la gestión del descanso y salud de los colaboradores. Brindamos servicios de monitoreo preventivo como apoyo a la mejora de la salud y prevención de accidentes, con la finalidad de salvaguardar la vida de los trabajadores y ayudarles a alcanzar el máximo de su productividad en el proyecto. ✨👨‍💼👩‍💼 ¡Tu bienestar es nuestra prioridad! 🔧👍`,
+          startTime: selectedSlot.dateTime,
+          duration: 30, // 30 minutos
+          attendees: [
+            { email }
+          ]
         };
         
-        // Extraer posible nombre de empresa del mensaje o usar el almacenado
-        let company = prospectState.company;
-        if (!company && message) {
-          // Buscar posible nombre de empresa en el mensaje
-          const companyMatch = message.match(/(?:empresa|compañía|organización|trabajo en|trabajo para)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i);
-          if (companyMatch && companyMatch[1]) {
-            company = companyMatch[1].trim();
-          }
-        }
+        // Crear evento en el calendario
+        const appointmentDetails = await createCustomEvent(newState, eventDetails);
         
-        // Usar el webhook para crear la cita
-        const { formatAppointmentData, sendAppointmentToMake } = require('../services/webhookService');
-        
-        const webhookData = formatAppointmentData(
-          { 
-            ...prospectState, 
-            emails,
-            company: company || 'Empresa del cliente'
-          },
-          appointmentDetails
-        );
-        
-        // Enviar datos al webhook
-        const webhookResult = await sendAppointmentToMake(webhookData);
-        
-        if (!webhookResult.success) {
-          logger.error('Error al enviar datos de cita al webhook:', webhookResult.error);
-          throw new Error('Error al crear la cita a través del webhook');
-        }
-        
-        logger.info('Cita creada exitosamente a través del webhook');
-        
-        // Determinar si la cita es para hoy, mañana o un día específico
-        let dateDescription;
-        const appointmentDate = moment(appointmentDetails.dateTime);
-        const now = moment();
-        
-        if (appointmentDate.isSame(now, 'day')) {
-          dateDescription = `hoy a las ${appointmentDetails.time}`;
-        } else if (appointmentDate.isSame(now.clone().add(1, 'day'), 'day')) {
-          dateDescription = `mañana a las ${appointmentDetails.time}`;
-        } else {
-          dateDescription = `el ${appointmentDetails.date} a las ${appointmentDetails.time}`;
-        }
-        
-        const response = `¡Listo! He programado la reunión para ${dateDescription}.
-
-🚀 ¡Únete a nuestra sesión de Logifit! ✨ Logifit es una moderna herramienta tecnológica inteligente adecuada para la gestión del descanso y salud de los colaboradores. Brindamos servicios de monitoreo preventivo como apoyo a la mejora de la salud y prevención de accidentes, con la finalidad de salvaguardar la vida de los trabajadores y ayudarles a alcanzar el máximo de su productividad en el proyecto.
-✨🌞 ¡Tu bienestar es nuestra prioridad! ⚒️👍
-
-Te he enviado una invitación por correo electrónico con los detalles y el enlace para la llamada.
-
-Por favor, confirma que has recibido la invitación respondiendo "Confirmado" o "Recibido".`;
-        
-        // Actualizar estado
-        const newState = {
-          ...prospectState,
-          conversationState: 'invitation',
-          invitationStep: 'follow_up',
-          emails,
-          company: company || prospectState.company, // Guardar la empresa si se encontró
+        // Actualizar estado con los detalles de la cita
+        const updatedState = {
+          ...newState,
           appointmentDetails,
-          appointmentCreated: true, // Marcar que la cita fue creada
-          lastInteraction: new Date()
+          appointmentCreated: true,
+          conversationState: 'appointment_confirmed'
         };
+        
+        // Enviar datos de la cita a Make.com para crear el evento en Google Calendar
+        const webhookResult = await sendAppointmentToMake(updatedState, appointmentDetails);
+        
+        // Actualizar el estado con el resultado del webhook
+        const finalState = {
+          ...updatedState,
+          webhookResult
+        };
+        
+        // Actualizar datos del prospecto en Google Sheets
+        try {
+          await updateProspectInSheets(finalState.phoneNumber, finalState);
+          logger.info(`Datos del prospecto actualizados en Google Sheets con la cita programada: ${finalState.phoneNumber}`);
+        } catch (error) {
+          logger.error(`Error al actualizar datos del prospecto en Google Sheets: ${error.message}`);
+          // Continuamos con el flujo aunque falle la actualización en Sheets
+        }
+        
+        // Generar respuesta de confirmación
+        const response = await generateOpenAIResponse({
+          role: 'assistant',
+          instruction: 'Genera un mensaje de confirmación para un prospecto que ha proporcionado su correo electrónico para recibir una invitación a una demostración de Logifit. Menciona que hemos programado la cita y que recibirá una invitación por correo electrónico con los detalles y el enlace para unirse a la reunión. Agradece su interés y menciona que estamos emocionados de mostrarle nuestra solución.',
+          context: `El prospecto ha proporcionado su correo electrónico: ${email}. La cita está programada para el ${appointmentDetails.date} a las ${appointmentDetails.time}.`,
+          outputFormat: 'text'
+        });
+        
+        return {
+          response,
+          newState: finalState
+        };
+      } catch (error) {
+        logger.error('Error al crear la cita:', error);
+        
+        // Generar respuesta de error
+        const response = "Lo siento, ha ocurrido un error al programar la cita. Por favor, intenta nuevamente más tarde o contáctanos directamente al +51 1 6449188.";
         
         return {
           response,
           newState
         };
-      } catch (error) {
-        logger.error('Error al crear cita:', error);
-        
-        const response = `Lo siento, tuve un problema al agendar la reunión. ¿Podrías confirmarme nuevamente tu disponibilidad?`;
-        
-        return {
-          response,
-          newState: prospectState
-        };
       }
-    } else {
-      // No se encontraron correos electrónicos
-      const response = `No pude identificar un correo electrónico válido. Por favor, comparte conmigo tu correo electrónico corporativo para poder enviarte la invitación a la reunión.`;
+    } catch (error) {
+      logger.error('Error en handleEmailCollection:', error);
       
       return {
-        response,
-        newState: prospectState
+        response: "Lo siento, ha ocurrido un error al procesar tu correo electrónico. Por favor, intenta nuevamente o contáctanos directamente al +51 1 6449188.",
+        newState: state
       };
     }
   }

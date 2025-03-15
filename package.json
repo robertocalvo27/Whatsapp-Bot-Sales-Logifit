@@ -12,7 +12,9 @@
     "test:simple": "node test-simple-connection.js",
     "test:calendar": "node test-calendar.js",
     "test:calendar-availability": "node test-calendar-availability.js",
-    "test:invitation": "node test/test-invitation-flow.js"
+    "test:invitation": "node test/test-invitation-flow.js",
+    "test:make": "node test/test-make-integration.js",
+    "test:sheets": "node test/test-sheets-integration.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",
