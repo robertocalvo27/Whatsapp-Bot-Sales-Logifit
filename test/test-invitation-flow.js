@@ -9,7 +9,6 @@
 
 require('dotenv').config();
 const moment = require('moment-timezone');
-const { BotWhatsapp } = require('@bot-whatsapp/bot');
 const { generateOpenAIResponse } = require('../src/services/openaiService');
 const CampaignFlow = require('../src/flows/campaignFlow');
 const InvitationFlow = require('../src/flows/invitationFlow');
