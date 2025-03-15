@@ -14,6 +14,9 @@ const BOT_RESUME_COMMAND = '!bot';
 // Añadir un objeto para rastrear los mensajes enviados recientemente
 const recentMessages = new Map();
 
+// Añadir un objeto para rastrear los últimos mensajes enviados por número
+const lastSentMessages = new Map();
+
 /**
  * Maneja los mensajes entrantes y dirige la conversación según el estado
  */
@@ -507,6 +510,19 @@ function notifyHighQualityProspect(phoneNumber, name, answers) {
  */
 async function sendMessage(sock, remoteJid, text) {
   try {
+    const senderNumber = remoteJid.split('@')[0];
+    
+    // Verificar si es el mismo mensaje que se envió recientemente (en los últimos 5 segundos)
+    const lastMessage = lastSentMessages.get(senderNumber);
+    const now = Date.now();
+    
+    if (lastMessage && 
+        lastMessage.text === text && 
+        (now - lastMessage.timestamp) < 5000) {
+      logger.info(`Mensaje duplicado evitado para ${senderNumber}`);
+      return true;
+    }
+    
     // Simular escritura para hacer más natural la conversación
     await sock.sendPresenceUpdate('composing', remoteJid);
     
@@ -520,7 +536,13 @@ async function sendMessage(sock, remoteJid, text) {
     // Marcar como leído después de enviar
     await sock.readMessages([{ remoteJid, id: 'status@broadcast' }]);
     
-    logger.info(`Mensaje enviado a ${remoteJid.split('@')[0]}: ${text.substring(0, 50)}...`);
+    // Guardar el mensaje enviado
+    lastSentMessages.set(senderNumber, {
+      text,
+      timestamp: now
+    });
+    
+    logger.info(`Mensaje enviado a ${senderNumber}: ${text.substring(0, 50)}...`);
     
     return true;
   } catch (error) {
