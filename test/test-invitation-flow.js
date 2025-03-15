@@ -10,8 +10,8 @@
 require('dotenv').config();
 const moment = require('moment-timezone');
 const { generateOpenAIResponse } = require('../src/services/openaiService');
-const CampaignFlow = require('../src/flows/campaignFlow');
-const InvitationFlow = require('../src/flows/invitationFlow');
+const campaignFlow = require('../src/flows/campaignFlow');
+const invitationFlow = require('../src/flows/invitationFlow');
 const logger = require('../src/utils/logger');
 
 // Configuración de prueba
@@ -22,9 +22,6 @@ const TEST_EMAIL = 'rcalvo.retana@gmail.com'; // Email para la invitación real
 async function testInvitationFlow() {
   try {
     logger.info('Iniciando prueba del flujo de invitación');
-    
-    // Instanciar flujos
-    const campaignFlow = new CampaignFlow();
     
     // Estado inicial del prospecto
     let prospectState = {
