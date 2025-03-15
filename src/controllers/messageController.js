@@ -3,9 +3,13 @@ const { getProspectState, updateProspectState } = require('../models/prospectMod
 const { generateOpenAIResponse } = require('../services/openaiService');
 const { checkCalendarAvailability, createCalendarEvent } = require('../services/calendarService');
 const { extractTextFromMessage, delay } = require('../utils/helpers');
-const { CONVERSATION_STATES, QUALIFICATION_QUESTIONS } = require('../utils/constants');
+const { CONVERSATION_STATES, QUALIFICATION_QUESTIONS, OPERATOR_TAKEOVER_COMMAND } = require('../utils/constants');
 const { saveProspectToSheets } = require('../services/sheetsService');
 const marketingService = require('../services/marketingService');
+const { handleClosingFlow, handleForcedClosing } = require('../flows/closingFlow');
+
+// Comando para devolver el control al bot
+const BOT_RESUME_COMMAND = '!bot';
 
 /**
  * Maneja los mensajes entrantes y dirige la conversación según el estado
@@ -23,6 +27,27 @@ async function handleIncomingMessage(sock, message) {
     // Obtener o crear el estado del prospecto
     const prospectState = await getProspectState(senderNumber);
     
+    // Verificar si es un comando de toma de control por operador
+    if (text.trim().toLowerCase() === OPERATOR_TAKEOVER_COMMAND) {
+      logger.info(`Comando de toma de control detectado para ${senderNumber}`);
+      
+      // Manejar la toma de control
+      const response = await handleOperatorTakeover(prospectState);
+      await sendMessage(sock, remoteJid, response);
+      return;
+    }
+    
+    // Verificar si es un comando para devolver el control al bot
+    if (text.trim().toLowerCase() === BOT_RESUME_COMMAND && 
+        prospectState.conversationState === CONVERSATION_STATES.OPERATOR_TAKEOVER) {
+      logger.info(`Comando para devolver control al bot detectado para ${senderNumber}`);
+      
+      // Manejar la devolución del control
+      const response = await handleBotResume(prospectState);
+      await sendMessage(sock, remoteJid, response);
+      return;
+    }
+    
     // Si es el primer mensaje, detectar la fuente de marketing y campaña
     if (prospectState.conversationState === CONVERSATION_STATES.INITIAL) {
       const marketingInfo = marketingService.detectMarketingSource(text);
@@ -35,6 +60,12 @@ async function handleIncomingMessage(sock, message) {
       });
       
       logger.info(`Fuente de marketing detectada para ${senderNumber}: ${marketingInfo.source} - ${marketingInfo.campaignName}`);
+    }
+    
+    // Si el operador ya tomó el control, no procesar el mensaje
+    if (prospectState.conversationState === CONVERSATION_STATES.OPERATOR_TAKEOVER) {
+      logger.info(`Mensaje no procesado para ${senderNumber} - Operador tiene el control`);
+      return;
     }
     
     // Determinar la siguiente acción basada en el estado actual
@@ -62,11 +93,22 @@ async function handleIncomingMessage(sock, message) {
         break;
         
       case CONVERSATION_STATES.CLOSING:
-        response = await handleClosing(sock, remoteJid, prospectState, text);
+        // Usar el flujo de cierre modular
+        const closingResult = await handleClosingFlow(prospectState, text);
+        response = closingResult.message;
         break;
         
       case CONVERSATION_STATES.GENERAL_INQUIRY:
         response = await handleGeneralInquiry(sock, remoteJid, prospectState, text);
+        break;
+        
+      case CONVERSATION_STATES.CLOSED:
+        // Si la conversación ya estaba cerrada, reiniciarla
+        await updateProspectState(senderNumber, {
+          conversationState: CONVERSATION_STATES.INITIAL,
+          lastInteraction: new Date()
+        });
+        response = await handleInitialGreeting(sock, remoteJid, prospectState);
         break;
         
       default:
@@ -91,6 +133,56 @@ async function handleIncomingMessage(sock, message) {
     } catch (e) {
       logger.error('Error al enviar mensaje de error:', e);
     }
+  }
+}
+
+/**
+ * Maneja la toma de control por parte de un operador
+ */
+async function handleOperatorTakeover(prospectState) {
+  try {
+    // Actualizar el estado a OPERATOR_TAKEOVER
+    await updateProspectState(prospectState.phoneNumber, {
+      conversationState: CONVERSATION_STATES.OPERATOR_TAKEOVER,
+      lastInteraction: new Date(),
+      operatorTakeover: {
+        timestamp: new Date(),
+        previousState: prospectState.conversationState
+      }
+    });
+    
+    logger.info(`Operador tomó el control de la conversación con ${prospectState.phoneNumber}`);
+    
+    // Mensaje invisible para el operador (no se envía al cliente)
+    return "✅ *Control tomado por operador humano*\n\nAhora puedes continuar la conversación directamente. El bot no responderá hasta que escribas '!bot' para devolverle el control.";
+  } catch (error) {
+    logger.error('Error al tomar control de la conversación:', error);
+    return "❌ *Error al tomar el control*\n\nHubo un problema al intentar tomar el control de la conversación. Por favor, intenta nuevamente.";
+  }
+}
+
+/**
+ * Maneja la devolución del control al bot
+ */
+async function handleBotResume(prospectState) {
+  try {
+    // Recuperar el estado anterior o establecer uno por defecto
+    const previousState = prospectState.operatorTakeover?.previousState || CONVERSATION_STATES.GREETING;
+    
+    // Actualizar el estado al anterior
+    await updateProspectState(prospectState.phoneNumber, {
+      conversationState: previousState,
+      lastInteraction: new Date(),
+      operatorTakeover: null
+    });
+    
+    logger.info(`Control devuelto al bot para la conversación con ${prospectState.phoneNumber}`);
+    
+    // Mensaje invisible para el operador (no se envía al cliente)
+    return "✅ *Control devuelto al bot*\n\nEl bot ahora continuará la conversación desde donde se quedó.";
+  } catch (error) {
+    logger.error('Error al devolver control al bot:', error);
+    return "❌ *Error al devolver el control*\n\nHubo un problema al intentar devolver el control al bot. Por favor, intenta nuevamente.";
   }
 }
 
@@ -271,38 +363,6 @@ Te hemos enviado una invitación por correo electrónico con los detalles y el e
 }
 
 /**
- * Maneja el cierre de la conversación
- */
-async function handleClosing(sock, remoteJid, prospectState, text) {
-  // Analizar si el usuario tiene alguna consulta adicional
-  const analysis = await generateOpenAIResponse({
-    role: 'system',
-    content: `Analiza la siguiente respuesta de un cliente después de programar una cita.
-    Determina si tiene alguna consulta adicional o si está listo para finalizar la conversación.
-    Respuesta del cliente: "${text}"
-    Responde únicamente con "CONSULTA" si tiene alguna pregunta adicional o "FINALIZAR" si parece estar satisfecho y listo para terminar.`
-  });
-  
-  if (analysis.includes('CONSULTA')) {
-    // Cambiar a modo de consulta general
-    await updateProspectState(prospectState.phoneNumber, {
-      conversationState: CONVERSATION_STATES.GENERAL_INQUIRY,
-      lastInteraction: new Date()
-    });
-    
-    return `Claro, ${prospectState.name}. Estoy aquí para responder cualquier pregunta adicional que tengas.
-
-¿En qué más puedo ayudarte?`;
-  } else {
-    return `¡Perfecto, ${prospectState.name}! Ha sido un placer atenderte.
-
-Te esperamos en nuestra cita programada. Si necesitas algo más antes de esa fecha, no dudes en escribirnos.
-
-¡Que tengas un excelente día! 👋`;
-  }
-}
-
-/**
  * Maneja consultas generales usando OpenAI
  */
 async function handleGeneralInquiry(sock, remoteJid, prospectState, text) {
@@ -450,5 +510,7 @@ async function sendMessage(sock, remoteJid, text) {
 
 module.exports = {
   handleIncomingMessage,
-  CONVERSATION_STATES
+  CONVERSATION_STATES,
+  OPERATOR_TAKEOVER_COMMAND,
+  BOT_RESUME_COMMAND
 }; 
