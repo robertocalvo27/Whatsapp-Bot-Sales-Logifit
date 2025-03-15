@@ -4,6 +4,8 @@ const { generateOpenAIResponse } = require('../services/openaiService');
 const { checkCalendarAvailability, createCalendarEvent } = require('../services/calendarService');
 const { extractTextFromMessage, delay } = require('../utils/helpers');
 const { CONVERSATION_STATES, QUALIFICATION_QUESTIONS } = require('../utils/constants');
+const { saveProspectToSheets } = require('../services/sheetsService');
+const marketingService = require('../services/marketingService');
 
 /**
  * Maneja los mensajes entrantes y dirige la conversación según el estado
@@ -20,6 +22,20 @@ async function handleIncomingMessage(sock, message) {
     
     // Obtener o crear el estado del prospecto
     const prospectState = await getProspectState(senderNumber);
+    
+    // Si es el primer mensaje, detectar la fuente de marketing y campaña
+    if (prospectState.conversationState === CONVERSATION_STATES.INITIAL) {
+      const marketingInfo = marketingService.detectMarketingSource(text);
+      
+      // Actualizar el estado del prospecto con la información de marketing
+      await updateProspectState(senderNumber, {
+        source: marketingInfo.source,
+        campaignName: marketingInfo.campaignName,
+        lastInteraction: new Date()
+      });
+      
+      logger.info(`Fuente de marketing detectada para ${senderNumber}: ${marketingInfo.source} - ${marketingInfo.campaignName}`);
+    }
     
     // Determinar la siguiente acción basada en el estado actual
     let response;
@@ -88,9 +104,17 @@ async function handleInitialGreeting(sock, remoteJid, prospectState) {
     lastInteraction: new Date()
   });
   
-  return `¡Hola! 👋 Soy ${process.env.BOT_NAME}, el asistente virtual de nuestra empresa. 
+  // Personalizar el mensaje según la fuente de marketing
+  let campaignMessage = '';
+  if (prospectState.source && prospectState.source !== 'WhatsApp') {
+    campaignMessage = `Gracias por contactarnos a través de nuestra campaña en ${prospectState.source}.`;
+  } else {
+    campaignMessage = 'Gracias por contactarnos.';
+  }
+  
+  return `¡Hola! 👋 Soy ${process.env.BOT_NAME || 'el asistente virtual'} de Logifit. 
 
-Gracias por contactarnos a través de nuestra campaña. Estoy aquí para ayudarte a resolver cualquier duda sobre nuestros productos/servicios.
+${campaignMessage} Estoy aquí para ayudarte a resolver cualquier duda sobre nuestras soluciones de monitoreo de fatiga y somnolencia para conductores.
 
 ¿Podrías decirme tu nombre para poder atenderte mejor?`;
 }
