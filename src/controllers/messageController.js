@@ -7,6 +7,7 @@ const { CONVERSATION_STATES, QUALIFICATION_QUESTIONS, OPERATOR_TAKEOVER_COMMAND 
 const { saveProspectToSheets } = require('../services/sheetsService');
 const marketingService = require('../services/marketingService');
 const { handleClosingFlow, handleForcedClosing } = require('../flows/closingFlow');
+const greetingFlow = require('../flows/greetingFlow');
 
 // Comando para devolver el control al bot
 const BOT_RESUME_COMMAND = '!bot';
@@ -55,7 +56,7 @@ async function handleIncomingMessage(sock, message) {
     }
     
     // Si es el primer mensaje, detectar la fuente de marketing y campaña
-    if (prospectState.conversationState === CONVERSATION_STATES.INITIAL) {
+    if (!prospectState.conversationState || prospectState.conversationState === CONVERSATION_STATES.INITIAL) {
       const marketingInfo = marketingService.detectMarketingSource(text);
       
       // Actualizar el estado del prospecto con la información de marketing
@@ -77,49 +78,83 @@ async function handleIncomingMessage(sock, message) {
     // Determinar la siguiente acción basada en el estado actual
     let response;
     
-    switch (prospectState.conversationState) {
-      case CONVERSATION_STATES.INITIAL:
-        response = await handleInitialGreeting(sock, remoteJid, prospectState);
-        break;
-        
-      case CONVERSATION_STATES.GREETING:
-        response = await handleQualificationStart(sock, remoteJid, prospectState, text);
-        break;
-        
-      case CONVERSATION_STATES.QUALIFICATION:
-        response = await handleQualificationProcess(sock, remoteJid, prospectState, text);
-        break;
-        
-      case CONVERSATION_STATES.INTEREST_VALIDATION:
-        response = await handleInterestValidation(sock, remoteJid, prospectState, text);
-        break;
-        
-      case CONVERSATION_STATES.APPOINTMENT_SCHEDULING:
-        response = await handleAppointmentScheduling(sock, remoteJid, prospectState, text);
-        break;
-        
-      case CONVERSATION_STATES.CLOSING:
-        // Usar el flujo de cierre modular
-        const closingResult = await handleClosingFlow(prospectState, text);
-        response = closingResult.message;
-        break;
-        
-      case CONVERSATION_STATES.GENERAL_INQUIRY:
-        response = await handleGeneralInquiry(sock, remoteJid, prospectState, text);
-        break;
-        
-      case CONVERSATION_STATES.CLOSED:
-        // Si la conversación ya estaba cerrada, reiniciarla
-        await updateProspectState(senderNumber, {
-          conversationState: CONVERSATION_STATES.INITIAL,
-          lastInteraction: new Date()
-        });
-        response = await handleInitialGreeting(sock, remoteJid, prospectState);
-        break;
-        
-      default:
-        // Si no hay un estado válido, iniciar desde el saludo
-        response = await handleInitialGreeting(sock, remoteJid, prospectState);
+    // Usar el flujo de saludo para los estados iniciales
+    if (!prospectState.conversationState || 
+        prospectState.conversationState === CONVERSATION_STATES.INITIAL || 
+        prospectState.conversationState === 'greeting' || 
+        prospectState.conversationState === 'initial_qualification') {
+      
+      // Usar el flujo de saludo modular
+      const greetingResult = await greetingFlow.handleInitialGreeting(text, prospectState);
+      
+      // Actualizar el estado del prospecto con el nuevo estado
+      await updateProspectState(senderNumber, greetingResult.newState);
+      
+      response = greetingResult.response;
+      
+      // Si el estado ha cambiado a calificación inicial, guardar en Google Sheets
+      if (greetingResult.newState.conversationState === 'initial_qualification' && 
+          greetingResult.newState.name && 
+          greetingResult.newState.name !== 'Desconocido') {
+        try {
+          await saveProspectToSheets(greetingResult.newState);
+          logger.info(`Prospecto guardado en Google Sheets: ${greetingResult.newState.name} de ${greetingResult.newState.company || 'Desconocida'}`);
+        } catch (error) {
+          logger.error('Error al guardar prospecto en Google Sheets:', error);
+        }
+      }
+    } else {
+      // Para otros estados, usar la lógica existente
+      switch (prospectState.conversationState) {
+        case CONVERSATION_STATES.QUALIFICATION:
+          response = await handleQualificationProcess(sock, remoteJid, prospectState, text);
+          break;
+          
+        case CONVERSATION_STATES.INTEREST_VALIDATION:
+          response = await handleInterestValidation(sock, remoteJid, prospectState, text);
+          break;
+          
+        case CONVERSATION_STATES.APPOINTMENT_SCHEDULING:
+          response = await handleAppointmentScheduling(sock, remoteJid, prospectState, text);
+          break;
+          
+        case CONVERSATION_STATES.CLOSING:
+          // Usar el flujo de cierre modular
+          const closingResult = await handleClosingFlow(prospectState, text);
+          response = closingResult.message;
+          break;
+          
+        case CONVERSATION_STATES.GENERAL_INQUIRY:
+          response = await handleGeneralInquiry(sock, remoteJid, prospectState, text);
+          break;
+          
+        case CONVERSATION_STATES.CLOSED:
+          // Si la conversación ya estaba cerrada, reiniciarla
+          await updateProspectState(senderNumber, {
+            conversationState: CONVERSATION_STATES.INITIAL,
+            lastInteraction: new Date()
+          });
+          
+          // Usar el flujo de saludo modular para reiniciar
+          const restartResult = await greetingFlow.handleInitialGreeting(text, {
+            ...prospectState,
+            conversationState: CONVERSATION_STATES.INITIAL
+          });
+          
+          await updateProspectState(senderNumber, restartResult.newState);
+          response = restartResult.response;
+          break;
+          
+        default:
+          // Si no hay un estado válido, iniciar desde el saludo
+          const defaultResult = await greetingFlow.handleInitialGreeting(text, {
+            ...prospectState,
+            conversationState: null
+          });
+          
+          await updateProspectState(senderNumber, defaultResult.newState);
+          response = defaultResult.response;
+      }
     }
     
     // Enviar respuesta al usuario, evitando duplicados
