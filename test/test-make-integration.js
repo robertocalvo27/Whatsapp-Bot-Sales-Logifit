@@ -306,24 +306,130 @@ async function testMakeIntegration() {
   }
 }
 
+// Añadir una nueva función para probar directamente el webhook
+async function testWebhookDirectly() {
+  try {
+    logger.info('Iniciando prueba directa del webhook de Make.com');
+    
+    // Verificar la URL del webhook
+    const webhookUrl = process.env.MAKE_WEBHOOK_URL;
+    if (!webhookUrl) {
+      throw new Error('No se ha configurado la URL del webhook de Make.com en el archivo .env');
+    }
+    logger.info(`URL del webhook configurada: ${webhookUrl}`);
+    
+    // Verificar el estado del escenario en Make.com
+    logger.info('Verificando si el escenario en Make.com está activo...');
+    const scenarioStatus = await checkMakeScenarioStatus();
+    
+    if (scenarioStatus.success) {
+      logger.info('✅ El escenario en Make.com está activo y respondiendo');
+    } else {
+      logger.warn('⚠️ No se pudo verificar el estado del escenario en Make.com');
+      logger.warn(`Error: ${scenarioStatus.error || 'Desconocido'}`);
+    }
+    
+    // Crear datos de prueba directamente
+    const now = moment().tz('America/Lima');
+    const startDateTime = now.clone().add(1, 'day').hour(9).minute(0).second(0);
+    const endDateTime = startDateTime.clone().add(30, 'minutes');
+    
+    // Datos de prueba para el webhook - usando el formato exacto del filtro
+    const testData = {
+      Titulo: 'Demostración Logifit - Roberto Calvo (Prueba Directa)',
+      Empresa: 'Logifit Test',
+      Participantes: [
+        {
+          nombre: process.env.VENDEDOR_NOMBRE || 'Roberto Calvo',
+          email: process.env.VENDEDOR_EMAIL || 'roberto.calvo@logifit.pe'
+        },
+        {
+          nombre: 'Roberto Calvo',
+          email: TEST_EMAIL
+        }
+      ],
+      Telefono: TEST_PHONE,
+      Fecha_de_Inicio: startDateTime.format('YYYY-MM-DD HH:mm:ss'),
+      Fecha_Fin: endDateTime.format('YYYY-MM-DD HH:mm:ss'),
+      "Plataforma Reunion": "Google Meet" // Exactamente como aparece en el filtro
+    };
+    
+    logger.info('Datos de prueba para el webhook:');
+    logger.info(JSON.stringify(testData, null, 2));
+    
+    // Enviar datos al webhook
+    logger.info('Enviando datos de prueba al webhook de Make.com...');
+    
+    const axiosConfig = {
+      timeout: 15000,
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    };
+    
+    try {
+      const response = await axios.post(webhookUrl, testData, axiosConfig);
+      logger.info(`Respuesta de Make.com (status ${response.status}):`, response.data);
+      
+      // Verificar si la respuesta contiene un Hangout Link
+      const hasHangoutLink = response.data && response.data.Hangout_Link;
+      
+      if (hasHangoutLink) {
+        logger.info(`✅ Evento creado exitosamente en Google Calendar con Hangout Link: ${response.data.Hangout_Link}`);
+      } else {
+        logger.warn('⚠️ La respuesta de Make.com no contiene un Hangout Link');
+        
+        // Analizar la respuesta para identificar problemas
+        logger.info('Analizando respuesta de Make.com para identificar problemas:');
+        
+        if (response.data && typeof response.data === 'object') {
+          Object.entries(response.data).forEach(([key, value]) => {
+            logger.info(`  ${key}: ${value}`);
+          });
+        }
+      }
+      
+      return {
+        success: response.status >= 200 && response.status < 300,
+        data: response.data
+      };
+    } catch (error) {
+      logger.error('Error al enviar datos al webhook:', error.message);
+      
+      if (error.response) {
+        logger.error('Detalles de la respuesta de error:');
+        logger.error(`  Status: ${error.response.status}`);
+        logger.error(`  Data: ${JSON.stringify(error.response.data, null, 2)}`);
+      }
+      
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  } catch (error) {
+    logger.error('Error en la prueba directa:', error.message);
+    return {
+      success: false,
+      error: error.message
+    };
+  }
+}
+
 // Ejecutar la prueba
 if (require.main === module) {
-  testMakeIntegration()
+  // Cambiar a la prueba directa del webhook
+  testWebhookDirectly()
     .then(result => {
       if (result.success) {
-        logger.info('✅ Prueba exitosa. Se ha creado una cita para:');
-        logger.info(`📅 Fecha: ${result.appointmentDetails.date}`);
-        logger.info(`🕒 Hora: ${result.appointmentDetails.time}`);
-        logger.info(`📧 Email: ${result.email}`);
+        logger.info('✅ Prueba directa exitosa');
+        
         logger.info('Verifica tu correo para confirmar la recepción de la invitación.');
         logger.info('Si no recibes el correo en unos minutos, verifica:');
         logger.info('1. Que la URL del webhook en .env sea correcta');
         logger.info('2. Que el escenario en Make.com esté activado');
         logger.info('3. Revisa la carpeta de spam en tu correo');
-        logger.info('4. Verifica los filtros en el escenario de Make.com (vemos que hay filtros que no pasan)');
-        logger.info('   - Asegúrate de que los filtros acepten el formato de fecha enviado');
-        logger.info('   - Verifica que no haya filtros que requieran campos adicionales');
-        logger.info('   - Comprueba que los nombres de los campos coincidan exactamente');
+        logger.info('4. Verifica los filtros en el escenario de Make.com');
         
         // Sugerir revisar el escenario en Make.com
         logger.info('\n📋 Pasos para revisar el escenario en Make.com:');
@@ -333,7 +439,7 @@ if (require.main === module) {
         logger.info('4. Revisa si hay errores en los módulos (especialmente en Google Calendar)');
         logger.info('5. Verifica que todos los campos requeridos estén mapeados correctamente');
       } else {
-        logger.error('❌ Prueba fallida:', result.error);
+        logger.error('❌ Prueba directa fallida:', result.error);
       }
       process.exit(0);
     })
@@ -343,4 +449,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { testMakeIntegration, checkMakeScenarioStatus }; 
+module.exports = { testMakeIntegration, checkMakeScenarioStatus, testWebhookDirectly }; 

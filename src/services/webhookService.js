@@ -127,10 +127,6 @@ function formatAppointmentData(prospectState, appointmentDetails) {
   const fechaInicio = startDateTime.format('YYYY-MM-DD HH:mm:ss');
   const fechaFin = endDateTime.format('YYYY-MM-DD HH:mm:ss');
   
-  // Crear formatos alternativos de fecha que podrían ser más compatibles con Make.com
-  const fechaInicioISO = startDateTime.toISOString();
-  const fechaFinISO = endDateTime.toISOString();
-  
   // Crear array de participantes
   const participantes = [
     {
@@ -151,6 +147,7 @@ function formatAppointmentData(prospectState, appointmentDetails) {
   }
   
   // Formatear los datos exactamente como los espera Make.com
+  // Basado en la inspección del filtro en Make.com
   const formattedData = {
     // 1. Título de la reunión
     Titulo: `Demostración Logifit - ${prospectState.name || 'Cliente'}`,
@@ -170,33 +167,9 @@ function formatAppointmentData(prospectState, appointmentDetails) {
     // 6. Fecha de fin (formato YYYY-MM-DD HH:mm:ss)
     Fecha_Fin: fechaFin,
     
-    // 7. Fechas en formato ISO para mayor compatibilidad
-    Fecha_Inicio_ISO: fechaInicioISO,
-    Fecha_Fin_ISO: fechaFinISO,
-    
-    // 8. Plataforma de reunión
-    Plataforma_Reunion: 'Google Meet',
-    
-    // 9. Duración (en minutos)
-    Duracion: 30,
-    
-    // 10. Enlace (se dejará vacío, lo generará Make.com)
-    Enlace: '',
-    
-    // 11. Información adicional que puede ser útil para Make.com
-    Tipo_Evento: 'Demostración',
-    Origen: 'WhatsApp Bot',
-    
-    // Datos adicionales que pueden ser útiles
-    Metadata: {
-      source: 'whatsapp-bot',
-      timestamp: new Date().toISOString(),
-      timezone: prospectState.timezone || 'America/Lima',
-      country: prospectState.country || 'PE',
-      campaignType: prospectState.campaignType,
-      qualificationAnswers: prospectState.qualificationAnswers || {},
-      interestScore: prospectState.interestAnalysis?.interestScore || 0
-    }
+    // 7. Plataforma de reunión - EXACTAMENTE como aparece en el filtro
+    // Según la captura de pantalla, el filtro espera exactamente "Google Meet"
+    "Plataforma Reunion": "Google Meet"
   };
   
   logger.info('Datos formateados para Make.com:', JSON.stringify(formattedData, null, 2));
