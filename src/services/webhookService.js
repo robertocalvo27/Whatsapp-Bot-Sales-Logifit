@@ -123,9 +123,9 @@ function formatAppointmentData(prospectState, appointmentDetails) {
   const startDateTime = moment(appointmentDetails.dateTime);
   const endDateTime = startDateTime.clone().add(30, 'minutes');
   
-  // Formatear fechas para Make.com
-  const fechaInicio = startDateTime.format('YYYY-MM-DD HH:mm:ss');
-  const fechaFin = endDateTime.format('YYYY-MM-DD HH:mm:ss');
+  // Formatear fechas exactamente como en el ejemplo exitoso
+  const fechaInicioFormateada = `${startDateTime.date()} de ${startDateTime.locale('es').format('MMMM')} de ${startDateTime.year()} ${startDateTime.hour()}:${startDateTime.format('mm')}`;
+  const fechaFinFormateada = `${endDateTime.date()} de ${endDateTime.locale('es').format('MMMM')} de ${endDateTime.year()} ${endDateTime.hour()}:${endDateTime.format('mm')}`;
   
   // Crear array de participantes
   const participantes = [
@@ -146,30 +146,46 @@ function formatAppointmentData(prospectState, appointmentDetails) {
     logger.warn('No se encontraron emails en el estado del prospecto:', prospectState);
   }
   
+  // Título del evento
+  const tituloEvento = `Demostración Logifit - ${prospectState.name || 'Cliente'}`;
+  
+  // Descripción del evento
+  const descripcionEvento = `🚀 ¡Únete a nuestra sesión de Logifit! 🚀✨ Logifit es una moderna herramienta tecnológica inteligente adecuada para la gestión del descanso y salud de los colaboradores. Brindamos servicios de monitoreo preventivo como apoyo a la mejora de la salud y prevención de accidentes, con la finalidad de salvaguardar la vida de los trabajadores y ayudarles a alcanzar el máximo de su productividad en el proyecto. ✨👨‍💼👩‍💼 ¡Tu bienestar es nuestra prioridad! 🔧👍`;
+  
   // Formatear los datos exactamente como los espera Make.com
-  // Basado en la inspección del filtro en Make.com
+  // Basado en el ejemplo exitoso mostrado en las capturas de pantalla
   const formattedData = {
-    // 1. Título de la reunión
-    Titulo: `Demostración Logifit - ${prospectState.name || 'Cliente'}`,
-    
-    // 2. Empresa
+    // Datos para el webhook y filtro
+    Titulo: tituloEvento,
     Empresa: prospectState.company || 'Empresa del cliente',
-    
-    // 3. Participantes (array de objetos con nombre y email)
     Participantes: participantes,
-    
-    // 4. Teléfono
     Telefono: prospectState.phoneNumber,
+    "Plataforma Reunion": "Google Meet",
     
-    // 5. Fecha de inicio (formato YYYY-MM-DD HH:mm:ss)
-    Fecha_de_Inicio: fechaInicio,
+    // Datos para el módulo de Google Calendar - EXACTAMENTE como en el ejemplo exitoso
+    "Start Date": fechaInicioFormateada,
+    "End Date": fechaFinFormateada,
     
-    // 6. Fecha de fin (formato YYYY-MM-DD HH:mm:ss)
-    Fecha_Fin: fechaFin,
+    // Usar el formato exacto que se ve en la captura de pantalla exitosa
+    "Fecha de Inicio": startDateTime.utc().format('YYYY-MM-DDTHH:mm:ss.000000Z'),
+    "Fecha Fin": endDateTime.utc().format('YYYY-MM-DDTHH:mm:ss.000000Z'),
     
-    // 7. Plataforma de reunión - EXACTAMENTE como aparece en el filtro
-    // Según la captura de pantalla, el filtro espera exactamente "Google Meet"
-    "Plataforma Reunion": "Google Meet"
+    // Mantener estos campos por compatibilidad
+    "start": startDateTime.utc().format('YYYY-MM-DDTHH:mm:ss.000000Z'),
+    "end": endDateTime.utc().format('YYYY-MM-DDTHH:mm:ss.000000Z'),
+    
+    "Create an Event": "detail",
+    "Color": 1,
+    "Event Name": tituloEvento,
+    "Calendar ID": vendedorEmail,
+    "Duration": "00:30:00",
+    "Use the default reminder settings for events on this calendar": true,
+    "Visibility": "default",
+    "All Day Event": false,
+    "Description": descripcionEvento,
+    "Send notifications about the event changes to": "all",
+    "Show me as": "opaque",
+    "Add Google Meet Video Conferencing": true
   };
   
   logger.info('Datos formateados para Make.com:', JSON.stringify(formattedData, null, 2));

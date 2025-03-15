@@ -331,10 +331,20 @@ async function testWebhookDirectly() {
     
     // Crear datos de prueba directamente
     const now = moment().tz('America/Lima');
-    const startDateTime = now.clone().add(1, 'day').hour(9).minute(0).second(0);
+    // Calcular la próxima fecha de lunes a viernes (días laborables)
+    let startDateTime = now.clone().add(1, 'day').hour(9).minute(0).second(0);
+    
+    // Si cae en fin de semana (6=sábado, 0=domingo), ajustar al próximo lunes
+    const dayOfWeek = startDateTime.day();
+    if (dayOfWeek === 0) { // Domingo
+        startDateTime = startDateTime.add(1, 'day'); // Mover al lunes
+    } else if (dayOfWeek === 6) { // Sábado
+        startDateTime = startDateTime.add(2, 'days'); // Mover al lunes
+    }
+    
     const endDateTime = startDateTime.clone().add(30, 'minutes');
     
-    // Datos de prueba para el webhook - usando el formato exacto del filtro
+    // Datos de prueba para el webhook - usando EXACTAMENTE el mismo formato que el ejemplo exitoso
     const testData = {
       Titulo: 'Demostración Logifit - Roberto Calvo (Prueba Directa)',
       Empresa: 'Logifit Test',
@@ -349,9 +359,33 @@ async function testWebhookDirectly() {
         }
       ],
       Telefono: TEST_PHONE,
-      Fecha_de_Inicio: startDateTime.format('YYYY-MM-DD HH:mm:ss'),
-      Fecha_Fin: endDateTime.format('YYYY-MM-DD HH:mm:ss'),
-      "Plataforma Reunion": "Google Meet" // Exactamente como aparece en el filtro
+      "Plataforma Reunion": "Google Meet",
+      
+      // Datos para el módulo de Google Calendar
+      // Estos son los campos que se ven en el ejemplo exitoso
+      "End Date": `${startDateTime.date()} de ${startDateTime.locale('es').format('MMMM')} de ${startDateTime.year()} ${endDateTime.hour()}:${endDateTime.format('mm')}`,
+      "Start Date": `${startDateTime.date()} de ${startDateTime.locale('es').format('MMMM')} de ${startDateTime.year()} ${startDateTime.hour()}:${startDateTime.format('mm')}`,
+      
+      // Usar el formato exacto que se ve en la captura de pantalla exitosa
+      "Fecha de Inicio": startDateTime.utc().format('YYYY-MM-DDTHH:mm:ss.000000Z'),
+      "Fecha Fin": endDateTime.utc().format('YYYY-MM-DDTHH:mm:ss.000000Z'),
+      
+      // Mantener estos campos por compatibilidad
+      "start": startDateTime.utc().format('YYYY-MM-DDTHH:mm:ss.000000Z'),
+      "end": endDateTime.utc().format('YYYY-MM-DDTHH:mm:ss.000000Z'),
+      
+      "Create an Event": "detail",
+      "Color": 1,
+      "Event Name": `Demostración Logifit - Roberto Calvo (Prueba Directa)`,
+      "Calendar ID": process.env.VENDEDOR_EMAIL || 'roberto.calvo@logifit.pe',
+      "Duration": "00:30:00",
+      "Use the default reminder settings for events on this calendar": true,
+      "Visibility": "default",
+      "All Day Event": false,
+      "Description": `🚀 ¡Únete a nuestra sesión de Logifit! 🚀✨ Logifit es una moderna herramienta tecnológica inteligente adecuada para la gestión del descanso y salud de los colaboradores. Brindamos servicios de monitoreo preventivo como apoyo a la mejora de la salud y prevención de accidentes, con la finalidad de salvaguardar la vida de los trabajadores y ayudarles a alcanzar el máximo de su productividad en el proyecto. ✨👨‍💼👩‍💼 ¡Tu bienestar es nuestra prioridad! 🔧👍`,
+      "Send notifications about the event changes to": "all",
+      "Show me as": "opaque",
+      "Add Google Meet Video Conferencing": true
     };
     
     logger.info('Datos de prueba para el webhook:');
