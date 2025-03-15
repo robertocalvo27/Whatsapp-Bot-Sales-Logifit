@@ -48,14 +48,10 @@ async function testInvitationFlow() {
     
     logger.info('Estado inicial del prospecto (ya calificado):', prospectState);
     
-    // 1. Simular aceptación de invitación a demostración
-    const acceptInvitationMessage = "Sí, me gustaría agendar una demostración";
-    logger.info(`Mensaje del cliente: "${acceptInvitationMessage}"`);
+    // 1. Simular oferta de horario disponible directamente
+    logger.info('Ofreciendo horario disponible directamente');
     
-    // Cambiar el estado para que esté en oferta de reunión
-    prospectState.conversationState = 'meeting_offer';
-    
-    let result = await campaignFlow.handleMeetingOffer(acceptInvitationMessage, prospectState);
+    let result = await invitationFlow.offerAvailableTimeSlot(prospectState);
     prospectState = result.newState;
     
     logger.info(`Respuesta del bot: "${result.response}"`);
