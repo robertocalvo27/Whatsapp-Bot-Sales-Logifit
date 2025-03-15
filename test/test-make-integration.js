@@ -23,6 +23,47 @@ const TEST_EMAIL = 'rcalvo.retana@gmail.com'; // Email para la invitación real
 // Configurar nivel de log para ver toda la información
 logger.level = 'debug';
 
+// Función para verificar el estado del escenario en Make.com
+async function checkMakeScenarioStatus() {
+  try {
+    logger.info('Verificando estado del escenario en Make.com...');
+    
+    // Obtener la URL del webhook
+    const webhookUrl = process.env.MAKE_WEBHOOK_URL;
+    if (!webhookUrl) {
+      logger.warn('No se ha configurado la URL del webhook de Make.com');
+      return { success: false, error: 'URL no configurada' };
+    }
+    
+    // Enviar una solicitud de prueba simple para verificar si el webhook está activo
+    const testData = {
+      test: true,
+      timestamp: new Date().toISOString(),
+      action: 'check_status'
+    };
+    
+    const response = await axios.post(webhookUrl, testData, {
+      timeout: 10000,
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    logger.info(`Respuesta de prueba de Make.com (status ${response.status}):`, response.data);
+    
+    return {
+      success: response.status >= 200 && response.status < 300,
+      status: response.status,
+      data: response.data
+    };
+  } catch (error) {
+    logger.error('Error al verificar el estado del escenario en Make.com:', error.message);
+    return {
+      success: false,
+      error: error.message,
+      details: error.response ? error.response.data : null
+    };
+  }
+}
+
 // Función principal de prueba
 async function testMakeIntegration() {
   try {
@@ -34,6 +75,17 @@ async function testMakeIntegration() {
       throw new Error('No se ha configurado la URL del webhook de Make.com en el archivo .env');
     }
     logger.info(`URL del webhook configurada: ${webhookUrl}`);
+    
+    // Verificar el estado del escenario en Make.com
+    logger.info('Verificando si el escenario en Make.com está activo...');
+    const scenarioStatus = await checkMakeScenarioStatus();
+    
+    if (scenarioStatus.success) {
+      logger.info('✅ El escenario en Make.com está activo y respondiendo');
+    } else {
+      logger.warn('⚠️ No se pudo verificar el estado del escenario en Make.com');
+      logger.warn(`Error: ${scenarioStatus.error || 'Desconocido'}`);
+    }
     
     // Verificar la configuración del vendedor
     const vendedorEmail = process.env.VENDEDOR_EMAIL;
@@ -119,7 +171,30 @@ async function testMakeIntegration() {
     
     // 6. Mostrar los datos que se enviaron a Make.com
     const webhookData = formatAppointmentData(prospectState, prospectState.appointmentDetails);
-    logger.info('Datos enviados a Make.com:', JSON.stringify(webhookData, null, 2));
+    logger.info('Datos enviados a Make.com:');
+    
+    // Mostrar cada campo individualmente para facilitar la depuración
+    logger.info('--- DATOS ENVIADOS A MAKE.COM (DETALLADOS) ---');
+    logger.info(`Título: ${webhookData.Titulo}`);
+    logger.info(`Empresa: ${webhookData.Empresa}`);
+    logger.info(`Teléfono: ${webhookData.Telefono}`);
+    logger.info(`Fecha de Inicio: ${webhookData.Fecha_de_Inicio}`);
+    logger.info(`Fecha Fin: ${webhookData.Fecha_Fin}`);
+    logger.info(`Plataforma: ${webhookData.Plataforma_Reunion}`);
+    logger.info(`Duración: ${webhookData.Duracion} minutos`);
+    
+    // Mostrar participantes detalladamente
+    logger.info('Participantes:');
+    webhookData.Participantes.forEach((p, index) => {
+      logger.info(`  ${index + 1}. Nombre: ${p.nombre}, Email: ${p.email}`);
+    });
+    
+    // Mostrar metadata
+    logger.info('Metadata:');
+    Object.entries(webhookData.Metadata).forEach(([key, value]) => {
+      logger.info(`  ${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`);
+    });
+    logger.info('--- FIN DATOS DETALLADOS ---');
     
     // 7. Enviar manualmente los datos al webhook para asegurarnos
     logger.info('Enviando datos manualmente al webhook de Make.com...');
@@ -148,30 +223,61 @@ async function testMakeIntegration() {
         if (response.data && response.data.error) {
           logger.error(`❌ Error en Make.com: ${response.data.error}`);
         }
-      }
-      
-      // Verificar si el escenario en Make.com está configurado correctamente
-      logger.info('Verificando configuración del escenario en Make.com...');
-      logger.info('1. Asegúrate de que el escenario "Automatizar invitaciones de ventas - Logifit" esté activado');
-      logger.info('2. Verifica que el módulo de Google Calendar tenga los permisos correctos');
-      logger.info('3. Comprueba que el calendario configurado sea el correcto');
-      
-      // Verificar si el correo está configurado correctamente
-      logger.info('Verificando configuración del correo...');
-      logger.info(`1. Asegúrate de que el correo ${TEST_EMAIL} esté escrito correctamente`);
-      logger.info('2. Revisa la carpeta de spam o promociones en tu correo');
-      logger.info('3. Verifica que el correo del vendedor tenga permisos para enviar invitaciones');
-      
-      if (response.status >= 200 && response.status < 300) {
-        logger.info('✅ Datos enviados correctamente a Make.com');
         
-        // Esperar un poco para que Make.com procese la solicitud
-        logger.info('Esperando 5 segundos para que Make.com procese la solicitud...');
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // Analizar la respuesta para identificar problemas con los filtros
+        logger.info('Analizando respuesta de Make.com para identificar problemas:');
         
-        logger.info('Verifica tu correo para confirmar la recepción de la invitación');
-      } else {
-        logger.error(`❌ Respuesta inesperada de Make.com: ${response.status}`);
+        if (response.data && typeof response.data === 'object') {
+          Object.entries(response.data).forEach(([key, value]) => {
+            logger.info(`  ${key}: ${value}`);
+          });
+        }
+        
+        // Verificar campos específicos que podrían causar problemas en los filtros
+        const camposProblematicos = [
+          { campo: 'Fecha_de_Inicio', valor: webhookData.Fecha_de_Inicio, formato: 'YYYY-MM-DD HH:mm:ss' },
+          { campo: 'Fecha_Fin', valor: webhookData.Fecha_Fin, formato: 'YYYY-MM-DD HH:mm:ss' },
+          { campo: 'Participantes', valor: webhookData.Participantes.length, esperado: 'Al menos 2' },
+          { campo: 'Empresa', valor: webhookData.Empresa, esperado: 'No vacío' },
+          { campo: 'Titulo', valor: webhookData.Titulo, esperado: 'No vacío' }
+        ];
+        
+        logger.info('Verificando campos críticos para los filtros:');
+        camposProblematicos.forEach(campo => {
+          const esValido = campo.valor && 
+            (typeof campo.valor === 'string' ? campo.valor.trim() !== '' : true) &&
+            (campo.campo === 'Participantes' ? campo.valor >= 2 : true);
+          
+          if (!esValido) {
+            logger.warn(`⚠️ Posible problema con el campo "${campo.campo}": ${campo.valor} (Esperado: ${campo.esperado})`);
+          } else {
+            logger.info(`✅ Campo "${campo.campo}" parece válido: ${campo.valor}`);
+          }
+        });
+        
+        // Verificar si el escenario en Make.com está configurado correctamente
+        logger.info('Verificando configuración del escenario en Make.com...');
+        logger.info('1. Asegúrate de que el escenario "Automatizar invitaciones de ventas - Logifit" esté activado');
+        logger.info('2. Verifica que el módulo de Google Calendar tenga los permisos correctos');
+        logger.info('3. Comprueba que el calendario configurado sea el correcto');
+        
+        // Verificar si el correo está configurado correctamente
+        logger.info('Verificando configuración del correo...');
+        logger.info(`1. Asegúrate de que el correo ${TEST_EMAIL} esté escrito correctamente`);
+        logger.info('2. Revisa la carpeta de spam o promociones en tu correo');
+        logger.info('3. Verifica que el correo del vendedor tenga permisos para enviar invitaciones');
+        
+        if (response.status >= 200 && response.status < 300) {
+          logger.info('✅ Datos enviados correctamente a Make.com');
+          
+          // Esperar un poco para que Make.com procese la solicitud
+          logger.info('Esperando 5 segundos para que Make.com procese la solicitud...');
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          logger.info('Verifica tu correo para confirmar la recepción de la invitación');
+        } else {
+          logger.error(`❌ Respuesta inesperada de Make.com: ${response.status}`);
+        }
       }
     } catch (error) {
       logger.error('❌ Error al enviar datos a Make.com:', error.message);
@@ -215,6 +321,17 @@ if (require.main === module) {
         logger.info('2. Que el escenario en Make.com esté activado');
         logger.info('3. Revisa la carpeta de spam en tu correo');
         logger.info('4. Verifica los filtros en el escenario de Make.com (vemos que hay filtros que no pasan)');
+        logger.info('   - Asegúrate de que los filtros acepten el formato de fecha enviado');
+        logger.info('   - Verifica que no haya filtros que requieran campos adicionales');
+        logger.info('   - Comprueba que los nombres de los campos coincidan exactamente');
+        
+        // Sugerir revisar el escenario en Make.com
+        logger.info('\n📋 Pasos para revisar el escenario en Make.com:');
+        logger.info('1. Inicia sesión en Make.com');
+        logger.info('2. Ve a "Escenarios" y busca "Automatizar invitaciones de ventas - Logifit"');
+        logger.info('3. Haz clic en "Historial de ejecuciones" para ver los registros de ejecución');
+        logger.info('4. Revisa si hay errores en los módulos (especialmente en Google Calendar)');
+        logger.info('5. Verifica que todos los campos requeridos estén mapeados correctamente');
       } else {
         logger.error('❌ Prueba fallida:', result.error);
       }
@@ -226,4 +343,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { testMakeIntegration }; 
+module.exports = { testMakeIntegration, checkMakeScenarioStatus }; 
