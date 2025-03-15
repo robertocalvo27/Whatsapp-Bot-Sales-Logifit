@@ -18,6 +18,23 @@ class GreetingFlow {
     // Convertir a minúsculas para facilitar la búsqueda
     const lowerMessage = message.toLowerCase();
     
+    // MEJORA: Detectar formato "Nombre de Empresa" directamente
+    // Este patrón captura formatos como "René Medrano de Minera Uyama" o "Carlos Vargas de Aceros Arequipa"
+    const fullPattern = /([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+) de ([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i;
+    const fullMatch = message.match(fullPattern);
+    if (fullMatch && fullMatch[1] && fullMatch[2]) {
+      const name = fullMatch[1].trim();
+      const company = fullMatch[2].trim();
+      
+      return {
+        containsNameOrCompany: true,
+        name,
+        company,
+        isIndependent: false,
+        needsMoreInfo: false
+      };
+    }
+    
     // Verificar primero si el mensaje comienza con "vengo de" para evitar que "vengo" se tome como nombre
     if (lowerMessage.startsWith('vengo de')) {
       // Caso especial para "Vengo de Empresa X"
@@ -176,6 +193,27 @@ class GreetingFlow {
       }
     }
     
+    // MEJORA: Si no se ha detectado nombre o empresa, intentar extraer directamente del mensaje
+    // Esto es útil para mensajes simples como "René Medrano de Minera Uyama"
+    if (!name && !company) {
+      // Dividir el mensaje por espacios
+      const parts = message.split(' ');
+      
+      // Si hay al menos 3 palabras, intentar extraer nombre y empresa
+      if (parts.length >= 3) {
+        // Buscar la palabra "de" que podría separar nombre y empresa
+        const deIndex = parts.findIndex(part => part.toLowerCase() === 'de');
+        
+        if (deIndex > 0 && deIndex < parts.length - 1) {
+          // Extraer nombre (todo antes de "de")
+          name = parts.slice(0, deIndex).join(' ');
+          
+          // Extraer empresa (todo después de "de")
+          company = parts.slice(deIndex + 1).join(' ');
+        }
+      }
+    }
+    
     // Determinar si contiene nombre o empresa
     const containsNameOrCompany = name !== null || company !== null;
     
@@ -214,11 +252,14 @@ class GreetingFlow {
         let messageAnalysis;
         
         try {
-          // En modo de prueba, usar análisis local
-          if (process.env.NODE_ENV === 'test' || !process.env.OPENAI_API_KEY) {
-            messageAnalysis = this.analyzeMessage(message);
-            logger.info('Análisis local de respuesta:', messageAnalysis);
-          } else {
+          // Primero intentar con el análisis local para respuestas rápidas
+          messageAnalysis = this.analyzeMessage(message);
+          logger.info('Análisis local de respuesta:', messageAnalysis);
+          
+          // Si el análisis local no detectó nombre o empresa y tenemos OpenAI, intentar con IA
+          if ((!messageAnalysis.containsNameOrCompany || !messageAnalysis.name || !messageAnalysis.company) && 
+              process.env.NODE_ENV !== 'test' && process.env.OPENAI_API_KEY) {
+            
             // Usar OpenAI para analizar si el mensaje contiene nombre y empresa
             const analysisPrompt = `Analiza este mensaje de un prospecto y extrae su nombre y empresa (si la menciona).
             Si menciona que es independiente o autónomo, considera "Independiente" como su empresa.
@@ -251,17 +292,17 @@ class GreetingFlow {
                 'containsNameOrCompany' in parsedAnalysis &&
                 'name' in parsedAnalysis &&
                 'company' in parsedAnalysis) {
-              messageAnalysis = parsedAnalysis;
-            } else {
-              // Si la estructura no es la esperada, usar análisis local
-              messageAnalysis = this.analyzeMessage(message);
-              logger.info('Usando análisis local como fallback:', messageAnalysis);
+              
+              // Si OpenAI encontró más información, usarla
+              if (parsedAnalysis.containsNameOrCompany && 
+                  (parsedAnalysis.name || parsedAnalysis.company)) {
+                messageAnalysis = parsedAnalysis;
+              }
             }
           }
         } catch (error) {
           logger.error('Error al analizar mensaje:', error.message);
-          messageAnalysis = this.analyzeMessage(message);
-          logger.info('Usando análisis local como fallback:', messageAnalysis);
+          // Si hay error, mantener el análisis local original
         }
 
         // Si el mensaje contiene nombre o empresa, actualizar el estado y pasar a calificación
@@ -279,6 +320,7 @@ class GreetingFlow {
           let response;
           if (newState.name !== 'Desconocido' && newState.company !== 'Desconocida') {
             // Pasar a QualificationFlow si tenemos nombre y empresa
+            logger.info(`Nombre y empresa detectados: ${newState.name} de ${newState.company}. Pasando a calificación.`);
             result = await qualificationFlow.startQualification(message, newState);
           } else if (newState.name !== 'Desconocido') {
             response = `Gracias ${newState.name}. ¿Me podrías confirmar en qué empresa trabajas o si eres independiente?`;
