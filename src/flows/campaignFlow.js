@@ -10,6 +10,7 @@ const qualificationFlow = require('./qualificationFlow');
 const invitationFlow = require('./invitationFlow');
 const checkoutFlow = require('./checkoutFlow');
 const { withHumanDelayAsync } = require('../utils/humanDelay');
+const { saveProspectToSheets } = require('../services/sheetsService');
 
 /**
  * Clase principal que maneja el flujo de la campaña
@@ -1169,6 +1170,61 @@ class CampaignFlow {
       };
     }
   };
+
+  /**
+   * Maneja el primer mensaje de un nuevo prospecto
+   * @param {string} message - Mensaje del usuario
+   * @param {string} phoneNumber - Número de teléfono del usuario
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async handleNewProspect(message, phoneNumber) {
+    try {
+      // Crear estado inicial del prospecto
+      const initialState = {
+        phoneNumber,
+        conversationState: 'greeting',
+        firstInteraction: new Date(),
+        lastInteraction: new Date(),
+        source: 'WhatsApp Campaign'
+      };
+      
+      // Generar respuesta de bienvenida
+      const response = await generateOpenAIResponse({
+        role: 'assistant',
+        instruction: 'Genera un mensaje de bienvenida para un nuevo prospecto que ha respondido a nuestra campaña de WhatsApp. Preséntate como asistente virtual de Logifit, explica brevemente que somos una empresa de tecnología para monitoreo de fatiga y somnolencia de conductores, y pregunta el nombre del prospecto.',
+        context: `El prospecto ha enviado: "${message}"`,
+        outputFormat: 'text'
+      });
+      
+      // Guardar datos del nuevo prospecto en Google Sheets
+      try {
+        await saveProspectToSheets(initialState);
+        logger.info(`Nuevo prospecto registrado en Google Sheets: ${phoneNumber}`);
+      } catch (error) {
+        logger.error(`Error al guardar nuevo prospecto en Google Sheets: ${error.message}`);
+        // Continuamos con el flujo aunque falle el registro en Sheets
+      }
+      
+      return {
+        response,
+        newState: {
+          ...initialState,
+          conversationState: 'name_collection'
+        }
+      };
+    } catch (error) {
+      logger.error('Error en handleNewProspect:', error);
+      return {
+        response: 'Hola, gracias por contactarnos. Soy el asistente virtual de Logifit. ¿Cuál es tu nombre?',
+        newState: {
+          phoneNumber,
+          conversationState: 'name_collection',
+          firstInteraction: new Date(),
+          lastInteraction: new Date()
+        }
+      };
+    }
+  }
 }
 
 module.exports = new CampaignFlow(); 
