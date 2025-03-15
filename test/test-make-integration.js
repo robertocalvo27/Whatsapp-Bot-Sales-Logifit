@@ -1,150 +1,130 @@
+/**
+ * Test para validar la integración con Make.com
+ * 
+ * Este script prueba:
+ * 1. La creación de una cita en Google Calendar
+ * 2. El envío de la invitación por correo electrónico
+ * 3. La integración con Make.com
+ */
+
 require('dotenv').config();
-const CampaignFlow = require('./src/flows/campaignFlow');
-const { formatAppointmentData, sendAppointmentToMake } = require('./src/services/webhookService');
-const logger = require('./src/utils/logger');
+const moment = require('moment-timezone');
+const { generateOpenAIResponse } = require('../src/services/openaiService');
+const campaignFlow = require('../src/flows/campaignFlow');
+const invitationFlow = require('../src/flows/invitationFlow');
+const { formatAppointmentData, sendAppointmentToMake } = require('../src/services/webhookService');
+const logger = require('../src/utils/logger');
 
-// Configurar nivel de log para ver toda la información
-logger.level = 'debug';
+// Configuración de prueba
+const TEST_PHONE = '51999999999'; // Número de prueba
+const TEST_EMAIL = 'rcalvo.retana@gmail.com'; // Email para la invitación real
 
-// Función para simular una conversación
-async function simulateConversation() {
-  console.log('\n===== SIMULACIÓN DE CONVERSACIÓN CON MAKE.COM =====\n');
-  
-  // Crear instancia del flujo de campaña
-  const campaignFlow = new CampaignFlow();
-  
-  // Estado inicial del prospecto
-  let prospectState = {
-    phoneNumber: '+51987654321',
-    name: null,
-    company: null,
-    emails: [],
-    conversationState: 'GREETING',
-    lastInteraction: new Date(),
-    timezone: 'America/Lima',
-    country: 'PE',
-    campaignType: 'GENERAL',
-    qualificationAnswers: {},
-    interestAnalysis: null,
-    selectedTime: null,
-    appointmentCreated: false
-  };
-  
-  // Simular mensajes y respuestas
-  const conversation = [
-    // Mensaje inicial del bot (no necesita respuesta)
-    {
-      role: 'bot',
-      message: '👋 ¡Hola! Soy el asistente virtual de Logifit, especialistas en soluciones de control de fatiga y somnolencia para conductores y operarios. ¿Con quién tengo el gusto de hablar?'
-    },
-    // Respuesta del usuario con su nombre y empresa
-    {
-      role: 'user',
-      message: 'Hola, soy Roberto Calvo de la empresa Minera Las Bambas'
-    },
-    // Respuesta a pregunta 1
-    {
-      role: 'user',
-      message: 'Tenemos aproximadamente 200 conductores en nuestra flota de transporte'
-    },
-    // Respuesta a pregunta 2
-    {
-      role: 'user',
-      message: 'Sí, hemos tenido algunos incidentes por fatiga en los últimos meses, es un tema que nos preocupa bastante'
-    },
-    // Respuesta a pregunta 3
-    {
-      role: 'user',
-      message: 'Actualmente no tenemos ningún sistema implementado, solo controles manuales'
-    },
-    // Aceptación de reunión
-    {
-      role: 'user',
-      message: 'Sí, me interesa agendar una reunión para conocer más sobre su solución'
-    },
-    // Propuesta de horario
-    {
-      role: 'user',
-      message: 'Mañana a las 10am estaría bien'
-    },
-    // Envío de email
-    {
-      role: 'user',
-      message: 'Mi correo es rcalvo.retana@gmail.com'
-    }
-  ];
-  
-  // Mostrar el mensaje inicial del bot
-  console.log(`\n🤖 BOT: ${conversation[0].message}`);
-  
-  // Procesar la conversación
-  for (let i = 1; i < conversation.length; i++) {
-    const currentMessage = conversation[i];
+// Función principal de prueba
+async function testMakeIntegration() {
+  try {
+    logger.info('Iniciando prueba de integración con Make.com');
     
-    // Mostrar el mensaje del usuario
-    console.log(`\n👤 USUARIO: ${currentMessage.message}`);
+    // Estado inicial del prospecto ya calificado
+    let prospectState = {
+      phoneNumber: TEST_PHONE,
+      name: 'Roberto Calvo',
+      company: 'Logifit Test',
+      conversationState: 'qualification',
+      qualificationStep: 'completed',
+      qualificationAnswers: {
+        role: 'Gerente de Operaciones',
+        fleetSize: '30 camiones',
+        currentSolution: 'Sí, tenemos problemas con la fatiga',
+        decisionTimeline: 'Inmediata'
+      },
+      interestAnalysis: {
+        highInterest: true,
+        interestScore: 9,
+        shouldOfferAppointment: true,
+        reasoning: 'Prospecto de alto valor con necesidad inmediata'
+      },
+      lastInteraction: new Date(),
+      timezone: 'America/Lima'
+    };
     
-    // Procesar el mensaje con el flujo de campaña
-    const result = await campaignFlow.processMessage(prospectState, currentMessage.message);
+    logger.info('Estado inicial del prospecto:', prospectState);
     
-    // Actualizar el estado del prospecto
+    // 1. Obtener un horario disponible
+    logger.info('Obteniendo horario disponible...');
+    
+    let result = await invitationFlow.offerAvailableTimeSlot(prospectState);
     prospectState = result.newState;
     
-    // Mostrar la respuesta del bot
-    console.log(`\n🤖 BOT: ${result.response}`);
+    logger.info(`Respuesta del bot: "${result.response}"`);
+    logger.info('Horario sugerido:', prospectState.suggestedSlot);
     
-    // Esperar un poco para simular tiempo de respuesta
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    // 2. Simular aceptación del horario
+    logger.info('Simulando aceptación del horario...');
     
-    // Si estamos en el paso de recolección de email y se proporcionó un email
-    if (prospectState.conversationState === 'FOLLOW_UP' && prospectState.appointmentCreated) {
-      console.log('\n===== DATOS ENVIADOS A MAKE.COM =====\n');
-      
-      // Mostrar los datos que se enviaron a Make.com
-      const appointmentDetails = prospectState.appointmentDetails;
-      console.log('Detalles de la cita:', JSON.stringify(appointmentDetails, null, 2));
-      
-      console.log('\nEstado del prospecto:', JSON.stringify({
-        name: prospectState.name,
-        company: prospectState.company,
-        emails: prospectState.emails,
-        phoneNumber: prospectState.phoneNumber,
-        timezone: prospectState.timezone
-      }, null, 2));
-      
-      // Mostrar el webhook completo que se envió
-      const webhookData = formatAppointmentData(prospectState, appointmentDetails);
-      console.log('\nDatos enviados al webhook:', JSON.stringify(webhookData, null, 2));
-      
-      // Intentar enviar los datos reales al webhook
-      console.log('\n===== ENVIANDO DATOS AL WEBHOOK DE MAKE.COM =====\n');
-      try {
-        const webhookResult = await sendAppointmentToMake(webhookData);
-        console.log('Respuesta del webhook:', JSON.stringify(webhookResult, null, 2));
-        
-        if (webhookResult.success) {
-          console.log('\n✅ INTEGRACIÓN EXITOSA: Los datos se enviaron correctamente a Make.com');
-          console.log('Verifica tu correo rcalvo.retana@gmail.com para confirmar la recepción de la invitación.');
-        } else {
-          console.log('\n❌ ERROR EN LA INTEGRACIÓN: No se pudieron enviar los datos a Make.com');
-          console.log('Error:', webhookResult.error);
-        }
-      } catch (error) {
-        console.error('\n❌ ERROR AL ENVIAR DATOS:', error);
-      }
+    result = await invitationFlow.handleScheduleConfirmation("Sí, me parece bien ese horario", prospectState);
+    prospectState = result.newState;
+    
+    logger.info(`Respuesta del bot: "${result.response}"`);
+    logger.info('Horario seleccionado:', prospectState.selectedSlot);
+    
+    // 3. Proporcionar correo electrónico
+    logger.info('Proporcionando correo electrónico...');
+    
+    result = await invitationFlow.handleEmailCollection(`Mi correo es ${TEST_EMAIL}`, prospectState);
+    prospectState = result.newState;
+    
+    logger.info(`Respuesta del bot: "${result.response}"`);
+    
+    // 4. Verificar si la cita fue creada correctamente
+    if (!prospectState.appointmentCreated) {
+      throw new Error('La cita no fue creada correctamente');
     }
+    
+    // 5. Mostrar detalles de la cita y datos enviados a Make.com
+    logger.info('Detalles de la cita:');
+    logger.info(`- Fecha: ${prospectState.appointmentDetails.date}`);
+    logger.info(`- Hora: ${prospectState.appointmentDetails.time}`);
+    logger.info(`- Email: ${prospectState.emails[0]}`);
+    
+    // 6. Mostrar los datos que se enviaron a Make.com
+    const webhookData = formatAppointmentData(prospectState, prospectState.appointmentDetails);
+    logger.info('Datos enviados a Make.com:', JSON.stringify(webhookData, null, 2));
+    
+    logger.info('Prueba completada con éxito');
+    return {
+      success: true,
+      appointmentDetails: prospectState.appointmentDetails,
+      email: prospectState.emails[0],
+      webhookData
+    };
+  } catch (error) {
+    logger.error('Error en la prueba:', error);
+    return {
+      success: false,
+      error: error.message
+    };
   }
-  
-  console.log('\n===== FIN DE LA SIMULACIÓN =====\n');
 }
 
-// Ejecutar la simulación
-simulateConversation()
-  .then(() => {
-    console.log('Simulación completada.');
-    process.exit(0);
-  })
-  .catch(error => {
-    console.error('Error en la simulación:', error);
-    process.exit(1);
-  }); 
+// Ejecutar la prueba
+if (require.main === module) {
+  testMakeIntegration()
+    .then(result => {
+      if (result.success) {
+        logger.info('✅ Prueba exitosa. Se ha creado una cita para:');
+        logger.info(`📅 Fecha: ${result.appointmentDetails.date}`);
+        logger.info(`🕒 Hora: ${result.appointmentDetails.time}`);
+        logger.info(`📧 Email: ${result.email}`);
+        logger.info('Verifica tu correo para confirmar la recepción de la invitación.');
+      } else {
+        logger.error('❌ Prueba fallida:', result.error);
+      }
+      process.exit(0);
+    })
+    .catch(error => {
+      logger.error('Error inesperado:', error);
+      process.exit(1);
+    });
+}
+
+module.exports = { testMakeIntegration }; 
