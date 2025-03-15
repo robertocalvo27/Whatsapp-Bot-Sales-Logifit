@@ -842,8 +842,7 @@ class CampaignFlow {
       // Manejar según el tipo de respuesta
       if (analysis.intent === 'accept') {
         // Cliente acepta la oferta de reunión
-        // Usar el nuevo método de invitationFlow para ofrecer un horario disponible
-        const invitationFlow = new invitationFlow();
+        // Usar el flujo de invitación para ofrecer un horario disponible
         return await invitationFlow.offerAvailableTimeSlot(prospectState);
       } else if (analysis.intent === 'reject') {
         // Cliente rechaza la oferta de reunión
@@ -989,7 +988,6 @@ class CampaignFlow {
   async handleMeetingScheduling(message, prospectState) {
     try {
       // Usar el flujo de invitación para manejar la programación
-      const invitationFlow = new invitationFlow();
       
       // Determinar el paso actual en el flujo de invitación
       const invitationStep = prospectState.invitationStep || 'schedule_confirmation';
@@ -1043,7 +1041,6 @@ class CampaignFlow {
     logger.warn('Método suggestNearestTime está deprecado. Usar invitationFlow.offerAvailableTimeSlot');
     
     // Usar el nuevo método del flujo de invitación
-    const invitationFlow = new invitationFlow();
     return await invitationFlow.offerAvailableTimeSlot(prospectState);
   }
 
