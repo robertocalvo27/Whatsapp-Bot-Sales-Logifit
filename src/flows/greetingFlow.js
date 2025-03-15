@@ -20,7 +20,7 @@ class GreetingFlow {
     
     // MEJORA: Detectar formato "Nombre de Empresa" directamente
     // Este patrón captura formatos como "René Medrano de Minera Uyama" o "Carlos Vargas de Aceros Arequipa"
-    const fullPattern = /([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+) de ([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i;
+    const fullPattern = /^([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+) de ([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)$/i;
     const fullMatch = message.match(fullPattern);
     if (fullMatch && fullMatch[1] && fullMatch[2]) {
       const name = fullMatch[1].trim();
@@ -30,6 +30,80 @@ class GreetingFlow {
         containsNameOrCompany: true,
         name,
         company,
+        isIndependent: false,
+        needsMoreInfo: false
+      };
+    }
+    
+    // Caso especial para "Soy Nombre de Empresa"
+    const soySoyPattern = /^soy ([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+) de ([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)$/i;
+    const soySoyMatch = message.match(soySoyPattern);
+    if (soySoyMatch && soySoyMatch[1] && soySoyMatch[2]) {
+      const name = soySoyMatch[1].trim();
+      const company = soySoyMatch[2].trim();
+      
+      return {
+        containsNameOrCompany: true,
+        name,
+        company,
+        isIndependent: false,
+        needsMoreInfo: false
+      };
+    }
+    
+    // Caso especial para "Me llamo X y trabajo en Y"
+    const trabajoEnPattern = /me llamo ([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+) y trabajo en ([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i;
+    const trabajoEnMatch = message.match(trabajoEnPattern);
+    if (trabajoEnMatch && trabajoEnMatch[1] && trabajoEnMatch[2]) {
+      const name = trabajoEnMatch[1].trim();
+      const company = trabajoEnMatch[2].trim();
+      
+      return {
+        containsNameOrCompany: true,
+        name,
+        company,
+        isIndependent: false,
+        needsMoreInfo: false
+      };
+    }
+    
+    // Caso especial para "Nombre, trabajo para Empresa"
+    const trabajoParaPattern = /([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+),? trabajo para ([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i;
+    const trabajoParaMatch = message.match(trabajoParaPattern);
+    if (trabajoParaMatch && trabajoParaMatch[1] && trabajoParaMatch[2]) {
+      const name = trabajoParaMatch[1].trim();
+      const company = trabajoParaMatch[2].trim();
+      
+      return {
+        containsNameOrCompany: true,
+        name,
+        company,
+        isIndependent: false,
+        needsMoreInfo: false
+      };
+    }
+    
+    // Caso especial para "Vengo de empresa X"
+    const vengoDeEmpresaPattern = /vengo de empresa ([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i;
+    const vengoDeEmpresaMatch = message.match(vengoDeEmpresaPattern);
+    if (vengoDeEmpresaMatch && vengoDeEmpresaMatch[1]) {
+      return {
+        containsNameOrCompany: true,
+        name: null,
+        company: vengoDeEmpresaMatch[1].trim(),
+        isIndependent: false,
+        needsMoreInfo: false
+      };
+    }
+    
+    // Caso especial para "Hola, soy Nombre"
+    const holaSoyPattern = /hola,?\s+soy\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s]+)$/i;
+    const holaSoyMatch = message.match(holaSoyPattern);
+    if (holaSoyMatch && holaSoyMatch[1]) {
+      return {
+        containsNameOrCompany: true,
+        name: holaSoyMatch[1].trim(),
+        company: null,
         isIndependent: false,
         needsMoreInfo: false
       };
@@ -99,6 +173,14 @@ class GreetingFlow {
       const match = message.match(pattern);
       if (match && match[1]) {
         name = match[1].trim();
+        
+        // Limpiar prefijos como "soy" o "me llamo" del nombre
+        if (name.toLowerCase().startsWith('soy ')) {
+          name = name.substring(4).trim();
+        } else if (name.toLowerCase().startsWith('me llamo ')) {
+          name = name.substring(9).trim();
+        }
+        
         // Limitar a 2 palabras para evitar incluir texto adicional
         const nameParts = name.split(' ').filter(part => part.length > 1);
         if (nameParts.length > 2) {
@@ -126,11 +208,6 @@ class GreetingFlow {
         const match = message.match(pattern);
         if (match && match[1]) {
           company = match[1].trim();
-          // Limitar a 3 palabras para evitar incluir texto adicional
-          const companyParts = company.split(' ').filter(part => part.length > 1);
-          if (companyParts.length > 3) {
-            company = companyParts.slice(0, 3).join(' ');
-          }
           break;
         }
       }
@@ -177,11 +254,8 @@ class GreetingFlow {
       }
       
       // Si la empresa comienza con "Empresa", extraer lo que sigue
-      if (company && company.toLowerCase().startsWith('empresa')) {
-        const empresaMatch = company.match(/empresa\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i);
-        if (empresaMatch && empresaMatch[1]) {
-          company = empresaMatch[1].trim();
-        }
+      if (company && company.toLowerCase().startsWith('empresa ')) {
+        company = company.substring(8).trim();
       }
     }
     
@@ -252,14 +326,11 @@ class GreetingFlow {
         let messageAnalysis;
         
         try {
-          // Primero intentar con el análisis local para respuestas rápidas
-          messageAnalysis = this.analyzeMessage(message);
-          logger.info('Análisis local de respuesta:', messageAnalysis);
-          
-          // Si el análisis local no detectó nombre o empresa y tenemos OpenAI, intentar con IA
-          if ((!messageAnalysis.containsNameOrCompany || !messageAnalysis.name || !messageAnalysis.company) && 
-              process.env.NODE_ENV !== 'test' && process.env.OPENAI_API_KEY) {
-            
+          // Usar OpenAI para analizar si el mensaje contiene nombre y empresa (excepto en modo test)
+          if (process.env.NODE_ENV === 'test' || !process.env.OPENAI_API_KEY) {
+            messageAnalysis = this.analyzeMessage(message);
+            logger.info('Análisis local de respuesta:', messageAnalysis);
+          } else {
             // Usar OpenAI para analizar si el mensaje contiene nombre y empresa
             const analysisPrompt = `Analiza este mensaje de un prospecto y extrae su nombre y empresa (si la menciona).
             Si menciona que es independiente o autónomo, considera "Independiente" como su empresa.
@@ -285,24 +356,30 @@ class GreetingFlow {
             logger.info('Análisis de OpenAI:', analysis);
 
             // Intentar parsear la respuesta
-            const parsedAnalysis = JSON.parse(analysis);
-            
-            // Verificar que tiene la estructura esperada
-            if (typeof parsedAnalysis === 'object' && 
-                'containsNameOrCompany' in parsedAnalysis &&
-                'name' in parsedAnalysis &&
-                'company' in parsedAnalysis) {
+            try {
+              const parsedAnalysis = JSON.parse(analysis);
               
-              // Si OpenAI encontró más información, usarla
-              if (parsedAnalysis.containsNameOrCompany && 
-                  (parsedAnalysis.name || parsedAnalysis.company)) {
+              // Verificar que tiene la estructura esperada
+              if (typeof parsedAnalysis === 'object' && 
+                  'containsNameOrCompany' in parsedAnalysis &&
+                  'name' in parsedAnalysis &&
+                  'company' in parsedAnalysis) {
                 messageAnalysis = parsedAnalysis;
+              } else {
+                // Si la estructura no es la esperada, usar análisis local
+                messageAnalysis = this.analyzeMessage(message);
+                logger.info('Usando análisis local como fallback:', messageAnalysis);
               }
+            } catch (parseError) {
+              logger.error('Error al parsear respuesta de OpenAI:', parseError.message);
+              messageAnalysis = this.analyzeMessage(message);
+              logger.info('Usando análisis local como fallback:', messageAnalysis);
             }
           }
         } catch (error) {
           logger.error('Error al analizar mensaje:', error.message);
-          // Si hay error, mantener el análisis local original
+          messageAnalysis = this.analyzeMessage(message);
+          logger.info('Usando análisis local como fallback:', messageAnalysis);
         }
 
         // Si el mensaje contiene nombre o empresa, actualizar el estado y pasar a calificación
