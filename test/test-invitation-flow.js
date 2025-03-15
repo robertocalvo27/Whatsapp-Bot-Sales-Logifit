@@ -23,95 +23,67 @@ async function testInvitationFlow() {
   try {
     logger.info('Iniciando prueba del flujo de invitación');
     
-    // Estado inicial del prospecto
+    // Estado inicial del prospecto ya calificado (saltamos la calificación)
     let prospectState = {
       phoneNumber: TEST_PHONE,
       name: 'Roberto Calvo',
       company: 'Logifit Test',
-      conversationState: 'initial',
+      conversationState: 'qualification',
+      qualificationStep: 'completed',
+      qualificationAnswers: {
+        role: 'Gerente de Operaciones',
+        fleetSize: '30 camiones',
+        currentSolution: 'Sí, tenemos problemas con la fatiga',
+        decisionTimeline: 'Inmediata'
+      },
+      interestAnalysis: {
+        highInterest: true,
+        interestScore: 9,
+        shouldOfferAppointment: true,
+        reasoning: 'Prospecto de alto valor con necesidad inmediata'
+      },
       lastInteraction: new Date(),
       timezone: 'America/Lima'
     };
     
-    logger.info('Estado inicial del prospecto:', prospectState);
+    logger.info('Estado inicial del prospecto (ya calificado):', prospectState);
     
-    // 1. Simular saludo inicial
-    const initialMessage = "Hola, me interesa saber más sobre su sistema de monitoreo de fatiga";
-    logger.info(`Mensaje del cliente: "${initialMessage}"`);
-    
-    let result = await campaignFlow.processMessage(initialMessage, prospectState);
-    prospectState = result.newState;
-    
-    logger.info(`Respuesta del bot: "${result.response}"`);
-    logger.info('Nuevo estado:', prospectState);
-    
-    // 2. Simular respuestas para calificación
-    const qualificationResponses = [
-      "Soy el gerente de operaciones de una empresa de transporte", // Rol
-      "Tenemos una flota de 30 camiones", // Tamaño de flota
-      "Sí, tenemos problemas con la fatiga de los conductores", // Problema
-      "Estamos buscando una solución inmediata" // Urgencia
-    ];
-    
-    for (const message of qualificationResponses) {
-      logger.info(`Mensaje del cliente: "${message}"`);
-      result = await campaignFlow.processMessage(message, prospectState);
-      prospectState = result.newState;
-      
-      logger.info(`Respuesta del bot: "${result.response}"`);
-      logger.info('Nuevo estado:', prospectState);
-      
-      // Esperar un momento entre mensajes
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    
-    // Verificar si el prospecto ha sido calificado correctamente
-    if (prospectState.conversationState !== 'qualification' && 
-        prospectState.conversationState !== 'invitation') {
-      throw new Error('El prospecto no ha sido calificado correctamente');
-    }
-    
-    logger.info('El prospecto ha sido calificado correctamente');
-    
-    // 3. Simular aceptación de invitación a demostración
+    // 1. Simular aceptación de invitación a demostración
     const acceptInvitationMessage = "Sí, me gustaría agendar una demostración";
     logger.info(`Mensaje del cliente: "${acceptInvitationMessage}"`);
     
-    result = await campaignFlow.processMessage(acceptInvitationMessage, prospectState);
+    // Cambiar el estado para que esté en oferta de reunión
+    prospectState.conversationState = 'meeting_offer';
+    
+    let result = await campaignFlow.handleMeetingOffer(acceptInvitationMessage, prospectState);
     prospectState = result.newState;
     
     logger.info(`Respuesta del bot: "${result.response}"`);
     logger.info('Nuevo estado:', prospectState);
     
-    // 4. Simular aceptación del horario propuesto
+    // 2. Simular aceptación del horario propuesto
     const acceptTimeMessage = "Sí, me parece bien ese horario";
     logger.info(`Mensaje del cliente: "${acceptTimeMessage}"`);
     
-    result = await campaignFlow.processMessage(acceptTimeMessage, prospectState);
+    result = await invitationFlow.handleScheduleConfirmation(acceptTimeMessage, prospectState);
     prospectState = result.newState;
     
     logger.info(`Respuesta del bot: "${result.response}"`);
     logger.info('Nuevo estado:', prospectState);
     
-    // 5. Proporcionar correo electrónico para la invitación
+    // 3. Proporcionar correo electrónico para la invitación
     const emailMessage = `Mi correo es ${TEST_EMAIL}`;
     logger.info(`Mensaje del cliente: "${emailMessage}"`);
     
-    result = await campaignFlow.processMessage(emailMessage, prospectState);
+    result = await invitationFlow.handleEmailCollection(emailMessage, prospectState);
     prospectState = result.newState;
     
     logger.info(`Respuesta del bot: "${result.response}"`);
     logger.info('Nuevo estado:', prospectState);
     
-    // 6. Confirmar recepción de la invitación
+    // 4. Confirmar recepción de la invitación
     const confirmationMessage = "Recibido, gracias";
     logger.info(`Mensaje del cliente: "${confirmationMessage}"`);
-    
-    result = await campaignFlow.processMessage(confirmationMessage, prospectState);
-    prospectState = result.newState;
-    
-    logger.info(`Respuesta del bot: "${result.response}"`);
-    logger.info('Nuevo estado final:', prospectState);
     
     // Verificar si la cita fue creada correctamente
     if (!prospectState.appointmentCreated) {
