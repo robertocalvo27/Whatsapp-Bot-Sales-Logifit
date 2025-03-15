@@ -15,7 +15,8 @@
     "test:invitation": "node test/test-invitation-flow.js",
     "test:make": "node test/test-make-integration.js",
     "test:sheets": "node test/test-sheets-integration.js",
-    "test:full": "node test/test-full-flow.js"
+    "test:full": "node test/test-full-flow.js",
+    "demo:marketing": "node test/test-marketing-demo.js"
   },
   "dependencies": {
     "@hapi/boom": "^10.0.1",

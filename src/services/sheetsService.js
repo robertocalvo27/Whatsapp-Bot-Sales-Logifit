@@ -11,109 +11,66 @@ const logger = require('../utils/logger');
 const SHEETS_WEBHOOK_URL = process.env.MAKE_SHEETS_WEBHOOK_URL;
 
 /**
- * Guarda la información de un prospecto en Google Sheets
- * @param {Object} prospectData - Datos del prospecto a guardar
+ * Guarda o actualiza los datos de un prospecto en Google Sheets
+ * @param {Object} prospectData - Datos del prospecto
  * @returns {Promise<Object>} - Resultado de la operación
  */
 async function saveProspectToSheets(prospectData) {
   try {
-    // Verificar si tenemos la URL del webhook configurada
-    if (!SHEETS_WEBHOOK_URL) {
-      logger.warn('No se ha configurado la URL del webhook para Google Sheets');
-      return {
-        success: false,
-        error: 'URL_NOT_CONFIGURED',
-        message: 'No se ha configurado la URL del webhook para Google Sheets'
-      };
+    if (!process.env.GOOGLE_SHEETS_WEBHOOK_URL) {
+      return { success: false, error: 'URL del webhook de Google Sheets no configurada' };
     }
 
-    // Formatear los datos para el webhook
-    const formattedData = formatProspectData(prospectData);
+    const now = new Date();
+    const formattedDate = now.toISOString();
+
+    // Determinar si el prospecto tiene cita programada
+    const hasMeeting = prospectData.appointmentCreated === true;
     
-    // Enviar los datos al webhook
-    const response = await axios.post(SHEETS_WEBHOOK_URL, formattedData, {
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000 // 10 segundos de timeout
-    });
+    // Calcular calificación de interés (1-10)
+    const interestScore = prospectData.interestAnalysis?.interestScore || 0;
     
-    // Verificar la respuesta
-    if (response.status >= 200 && response.status < 300) {
-      logger.info('Datos del prospecto guardados correctamente en Google Sheets');
-      return {
-        success: true,
-        data: response.data
-      };
+    // Obtener tamaño de flota
+    const fleetSize = prospectData.qualificationAnswers?.fleetSize || 'No especificado';
+    
+    // Determinar estado del prospecto
+    let status = 'Nuevo';
+    if (prospectData.conversationState === 'closed') {
+      status = hasMeeting ? 'Cita Programada' : 'Cerrado';
+    } else if (prospectData.conversationState === 'closing') {
+      status = hasMeeting ? 'Cita Programada' : 'En Seguimiento';
+    } else if (prospectData.conversationState) {
+      status = 'En Conversación';
+    }
+
+    // Preparar datos para enviar al webhook
+    const data = {
+      Date: formattedDate,
+      Source: prospectData.source || 'WhatsApp',
+      'Nombre campaña': prospectData.campaignName || 'Campaña WhatsApp',
+      'Nombre Prospecto': prospectData.name || 'No proporcionado',
+      Empresa: prospectData.company || 'No proporcionada',
+      Telefono: prospectData.phoneNumber || 'No proporcionado',
+      'Tamaño Flota': fleetSize,
+      'Calificacion interes': interestScore,
+      'Cita (SI/NO)': hasMeeting ? 'SI' : 'NO',
+      Fecha: hasMeeting ? prospectData.appointmentDetails?.date || '' : '',
+      Hora: hasMeeting ? prospectData.appointmentDetails?.time || '' : '',
+      Estatus: status
+    };
+
+    // Enviar datos al webhook
+    const response = await axios.post(process.env.GOOGLE_SHEETS_WEBHOOK_URL, data);
+
+    if (response.status === 200) {
+      return { success: true, data: response.data };
     } else {
-      logger.error(`Error al guardar datos en Google Sheets: ${response.status}`);
-      return {
-        success: false,
-        error: 'API_ERROR',
-        status: response.status,
-        message: 'Error al guardar datos en Google Sheets'
-      };
+      return { success: false, error: `Error al guardar en Google Sheets: ${response.statusText}` };
     }
   } catch (error) {
-    logger.error('Error al guardar datos del prospecto en Google Sheets:', error);
-    return {
-      success: false,
-      error: 'EXCEPTION',
-      message: error.message,
-      details: error.response ? error.response.data : null
-    };
+    console.error('Error al guardar en Google Sheets:', error);
+    return { success: false, error: error.message };
   }
-}
-
-/**
- * Formatea los datos del prospecto para enviarlos a Google Sheets
- * @param {Object} prospectData - Datos del prospecto
- * @returns {Object} - Datos formateados para el webhook
- */
-function formatProspectData(prospectData) {
-  // Extraer datos relevantes del prospecto
-  const {
-    phoneNumber,
-    name,
-    company,
-    emails = [],
-    qualificationAnswers = {},
-    interestAnalysis = {},
-    appointmentDetails = {},
-    conversationState,
-    lastInteraction,
-    firstInteraction,
-    source = 'WhatsApp',
-    campaignName = 'Campaña General'
-  } = prospectData;
-  
-  // Formatear la fecha actual
-  const now = new Date();
-  const formattedDate = now.toISOString().split('T')[0]; // Formato YYYY-MM-DD
-  
-  // Determinar si tiene cita programada
-  const hasCita = appointmentDetails && appointmentDetails.date ? 'SI' : 'NO';
-  
-  // Crear objeto con los datos formateados según la estructura de la hoja de Google Sheets
-  return {
-    // Campos exactos de la hoja de Google Sheets
-    Date: formattedDate,
-    Source: source,
-    "Nombre campaña": campaignName,
-    "Nombre Prospecto": name || 'No proporcionado',
-    Empresa: company || 'No proporcionada',
-    Telefono: phoneNumber,
-    "Tamaño Flota": qualificationAnswers.fleetSize || 'No proporcionado',
-    "Calificacion interes": interestAnalysis.interestScore || 0,
-    "Cita (SI/NO)": hasCita,
-    Fecha: appointmentDetails.date || '',
-    Hora: appointmentDetails.time || '',
-    Estatus: conversationState || 'Nuevo',
-    
-    // Campos adicionales para Make.com
-    Timestamp: now.toISOString(),
-    Accion: 'registro_prospecto'
-  };
 }
 
 /**
@@ -125,56 +82,66 @@ function formatProspectData(prospectData) {
 async function updateProspectInSheets(phoneNumber, updatedData) {
   try {
     // Verificar si tenemos la URL del webhook configurada
-    if (!SHEETS_WEBHOOK_URL) {
-      logger.warn('No se ha configurado la URL del webhook para Google Sheets');
-      return {
-        success: false,
-        error: 'URL_NOT_CONFIGURED',
-        message: 'No se ha configurado la URL del webhook para Google Sheets'
-      };
+    if (!process.env.GOOGLE_SHEETS_WEBHOOK_URL) {
+      return { success: false, error: 'URL del webhook de Google Sheets no configurada' };
     }
     
-    // Formatear los datos para el webhook
-    const formattedData = formatProspectData({
+    // Combinar datos
+    const prospectData = {
       ...updatedData,
       phoneNumber
-    });
+    };
     
-    // Añadir acción de actualización
-    formattedData.Accion = 'actualizacion_prospecto';
+    // Determinar si el prospecto tiene cita programada
+    const hasMeeting = prospectData.appointmentCreated === true;
     
-    // Enviar los datos al webhook
-    const response = await axios.post(SHEETS_WEBHOOK_URL, formattedData, {
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      timeout: 10000 // 10 segundos de timeout
-    });
+    // Calcular calificación de interés (1-10)
+    const interestScore = prospectData.interestAnalysis?.interestScore || 0;
     
-    // Verificar la respuesta
-    if (response.status >= 200 && response.status < 300) {
-      logger.info(`Datos del prospecto ${phoneNumber} actualizados correctamente en Google Sheets`);
-      return {
-        success: true,
-        data: response.data
-      };
+    // Obtener tamaño de flota
+    const fleetSize = prospectData.qualificationAnswers?.fleetSize || 'No especificado';
+    
+    // Determinar estado del prospecto
+    let status = 'Actualizado';
+    if (prospectData.conversationState === 'closed') {
+      status = hasMeeting ? 'Cita Programada' : 'Cerrado';
+    } else if (prospectData.conversationState === 'closing') {
+      status = hasMeeting ? 'Cita Programada' : 'En Seguimiento';
+    } else if (prospectData.conversationState) {
+      status = 'En Conversación';
+    }
+
+    // Preparar datos para enviar al webhook
+    const data = {
+      Date: new Date().toISOString(),
+      Source: prospectData.source || 'WhatsApp',
+      'Nombre campaña': prospectData.campaignName || 'Campaña WhatsApp',
+      'Nombre Prospecto': prospectData.name || 'No proporcionado',
+      Empresa: prospectData.company || 'No proporcionada',
+      Telefono: phoneNumber,
+      'Tamaño Flota': fleetSize,
+      'Calificacion interes': interestScore,
+      'Cita (SI/NO)': hasMeeting ? 'SI' : 'NO',
+      Fecha: hasMeeting ? prospectData.appointmentDetails?.date || '' : '',
+      Hora: hasMeeting ? prospectData.appointmentDetails?.time || '' : '',
+      Estatus: status,
+      
+      // Campos adicionales para Make.com
+      Timestamp: new Date().toISOString(),
+      Accion: 'actualizacion_prospecto'
+    };
+    
+    // Enviar datos al webhook
+    const response = await axios.post(process.env.GOOGLE_SHEETS_WEBHOOK_URL, data);
+    
+    if (response.status === 200) {
+      return { success: true, data: response.data };
     } else {
-      logger.error(`Error al actualizar datos en Google Sheets: ${response.status}`);
-      return {
-        success: false,
-        error: 'API_ERROR',
-        status: response.status,
-        message: 'Error al actualizar datos en Google Sheets'
-      };
+      return { success: false, error: `Error al actualizar en Google Sheets: ${response.statusText}` };
     }
   } catch (error) {
-    logger.error(`Error al actualizar datos del prospecto ${phoneNumber} en Google Sheets:`, error);
-    return {
-      success: false,
-      error: 'EXCEPTION',
-      message: error.message,
-      details: error.response ? error.response.data : null
-    };
+    console.error(`Error al actualizar datos del prospecto ${phoneNumber} en Google Sheets:`, error);
+    return { success: false, error: error.message };
   }
 }
 
