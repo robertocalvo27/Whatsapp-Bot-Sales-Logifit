@@ -27,21 +27,83 @@ async function sendAppointmentToMake(appointmentData) {
     
     logger.info('Enviando datos de cita a Make.com:', appointmentData);
     
-    // Enviar los datos al webhook
-    const response = await axios.post(MAKE_WEBHOOK_URL, appointmentData);
+    // Verificar que los datos contengan la información necesaria
+    if (!appointmentData.Participantes || appointmentData.Participantes.length < 2) {
+      logger.warn('Los datos no contienen suficientes participantes:', appointmentData.Participantes);
+      return {
+        success: false,
+        error: 'Faltan participantes en los datos de la cita'
+      };
+    }
     
-    logger.info('Respuesta de Make.com recibida:', response.data);
+    // Verificar que el correo del cliente esté presente
+    const clienteEmail = appointmentData.Participantes.find(p => p.email !== process.env.VENDEDOR_EMAIL)?.email;
+    if (!clienteEmail) {
+      logger.warn('No se encontró el correo del cliente en los participantes');
+      return {
+        success: false,
+        error: 'No se encontró el correo del cliente'
+      };
+    }
+    
+    logger.info(`Correo del cliente para la invitación: ${clienteEmail}`);
+    
+    // Configurar timeout más largo para la solicitud
+    const axiosConfig = {
+      timeout: 15000, // 15 segundos
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    };
+    
+    // Enviar los datos al webhook
+    logger.info(`Enviando solicitud POST a: ${MAKE_WEBHOOK_URL}`);
+    const response = await axios.post(MAKE_WEBHOOK_URL, appointmentData, axiosConfig);
+    
+    logger.info(`Respuesta de Make.com recibida (status ${response.status}):`, response.data);
+    
+    // Analizar la respuesta para verificar si fue exitosa
+    let success = response.status >= 200 && response.status < 300;
+    
+    // Verificar si la respuesta contiene un Hangout Link (indicador de que se creó el evento en Google Calendar)
+    const hasHangoutLink = response.data && response.data.Hangout_Link;
+    
+    if (hasHangoutLink) {
+      logger.info(`✅ Evento creado exitosamente en Google Calendar con Hangout Link: ${response.data.Hangout_Link}`);
+    } else if (success) {
+      logger.warn('⚠️ La respuesta de Make.com no contiene un Hangout Link, pero el código de estado es exitoso');
+    }
+    
+    // Verificar si hay algún mensaje de error en la respuesta
+    const errorMessage = response.data && response.data.error;
+    if (errorMessage) {
+      logger.warn(`⚠️ La respuesta de Make.com contiene un mensaje de error: ${errorMessage}`);
+      success = false;
+    }
     
     return {
-      success: true,
-      data: response.data
+      success: success,
+      data: response.data,
+      hangoutLink: hasHangoutLink ? response.data.Hangout_Link : null,
+      statusCode: response.status
     };
   } catch (error) {
-    logger.error('Error al enviar datos a Make.com:', error);
+    logger.error('Error al enviar datos a Make.com:', error.message);
+    
+    // Mostrar más detalles del error si están disponibles
+    if (error.response) {
+      logger.error('Detalles de la respuesta de error:', {
+        status: error.response.status,
+        data: error.response.data
+      });
+    } else if (error.request) {
+      logger.error('No se recibió respuesta del servidor');
+    }
     
     return {
       success: false,
-      error: error.message
+      error: error.message,
+      details: error.response ? error.response.data : null
     };
   }
 }
@@ -79,10 +141,13 @@ function formatAppointmentData(prospectState, appointmentDetails) {
       nombre: prospectState.name || 'Cliente',
       email: prospectState.emails[0]
     });
+    logger.info(`Añadiendo participante cliente: ${prospectState.name} <${prospectState.emails[0]}>`);
+  } else {
+    logger.warn('No se encontraron emails en el estado del prospecto:', prospectState);
   }
   
   // Formatear los datos exactamente como los espera Make.com
-  return {
+  const formattedData = {
     // 1. Título de la reunión
     Titulo: `Demostración Logifit - ${prospectState.name || 'Cliente'}`,
     
@@ -121,6 +186,10 @@ function formatAppointmentData(prospectState, appointmentDetails) {
       interestScore: prospectState.interestAnalysis?.interestScore || 0
     }
   };
+  
+  logger.info('Datos formateados para Make.com:', JSON.stringify(formattedData, null, 2));
+  
+  return formattedData;
 }
 
 module.exports = {

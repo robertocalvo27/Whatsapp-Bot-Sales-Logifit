@@ -35,6 +35,17 @@ async function testMakeIntegration() {
     }
     logger.info(`URL del webhook configurada: ${webhookUrl}`);
     
+    // Verificar la configuración del vendedor
+    const vendedorEmail = process.env.VENDEDOR_EMAIL;
+    const vendedorNombre = process.env.VENDEDOR_NOMBRE;
+    if (!vendedorEmail || !vendedorNombre) {
+      logger.warn('⚠️ No se ha configurado correctamente la información del vendedor en .env');
+      logger.warn(`VENDEDOR_EMAIL: ${vendedorEmail || 'No configurado'}`);
+      logger.warn(`VENDEDOR_NOMBRE: ${vendedorNombre || 'No configurado'}`);
+    } else {
+      logger.info(`Vendedor configurado: ${vendedorNombre} <${vendedorEmail}>`);
+    }
+    
     // Estado inicial del prospecto ya calificado
     let prospectState = {
       phoneNumber: TEST_PHONE,
@@ -114,14 +125,53 @@ async function testMakeIntegration() {
     logger.info('Enviando datos manualmente al webhook de Make.com...');
     
     try {
-      const response = await axios.post(webhookUrl, webhookData);
-      logger.info('Respuesta de Make.com:', response.data);
-      logger.info('Código de estado HTTP:', response.status);
+      // Enviar directamente con axios para tener más control
+      const axiosConfig = {
+        timeout: 15000, // 15 segundos
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      };
+      
+      const response = await axios.post(webhookUrl, webhookData, axiosConfig);
+      logger.info(`Respuesta de Make.com (status ${response.status}):`, response.data);
+      
+      // Verificar si la respuesta contiene un Hangout Link
+      const hasHangoutLink = response.data && response.data.Hangout_Link;
+      
+      if (hasHangoutLink) {
+        logger.info(`✅ Evento creado exitosamente en Google Calendar con Hangout Link: ${response.data.Hangout_Link}`);
+      } else {
+        logger.warn('⚠️ La respuesta de Make.com no contiene un Hangout Link');
+        
+        // Verificar si hay algún mensaje de error en la respuesta
+        if (response.data && response.data.error) {
+          logger.error(`❌ Error en Make.com: ${response.data.error}`);
+        }
+      }
+      
+      // Verificar si el escenario en Make.com está configurado correctamente
+      logger.info('Verificando configuración del escenario en Make.com...');
+      logger.info('1. Asegúrate de que el escenario "Automatizar invitaciones de ventas - Logifit" esté activado');
+      logger.info('2. Verifica que el módulo de Google Calendar tenga los permisos correctos');
+      logger.info('3. Comprueba que el calendario configurado sea el correcto');
+      
+      // Verificar si el correo está configurado correctamente
+      logger.info('Verificando configuración del correo...');
+      logger.info(`1. Asegúrate de que el correo ${TEST_EMAIL} esté escrito correctamente`);
+      logger.info('2. Revisa la carpeta de spam o promociones en tu correo');
+      logger.info('3. Verifica que el correo del vendedor tenga permisos para enviar invitaciones');
       
       if (response.status >= 200 && response.status < 300) {
         logger.info('✅ Datos enviados correctamente a Make.com');
+        
+        // Esperar un poco para que Make.com procese la solicitud
+        logger.info('Esperando 5 segundos para que Make.com procese la solicitud...');
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        logger.info('Verifica tu correo para confirmar la recepción de la invitación');
       } else {
-        logger.warn(`⚠️ Respuesta inesperada de Make.com: ${response.status}`);
+        logger.error(`❌ Respuesta inesperada de Make.com: ${response.status}`);
       }
     } catch (error) {
       logger.error('❌ Error al enviar datos a Make.com:', error.message);
@@ -164,6 +214,7 @@ if (require.main === module) {
         logger.info('1. Que la URL del webhook en .env sea correcta');
         logger.info('2. Que el escenario en Make.com esté activado');
         logger.info('3. Revisa la carpeta de spam en tu correo');
+        logger.info('4. Verifica los filtros en el escenario de Make.com (vemos que hay filtros que no pasan)');
       } else {
         logger.error('❌ Prueba fallida:', result.error);
       }
