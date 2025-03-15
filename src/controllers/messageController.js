@@ -11,6 +11,9 @@ const { handleClosingFlow, handleForcedClosing } = require('../flows/closingFlow
 // Comando para devolver el control al bot
 const BOT_RESUME_COMMAND = '!bot';
 
+// Añadir un objeto para rastrear los mensajes enviados recientemente
+const recentMessages = new Map();
+
 /**
  * Maneja los mensajes entrantes y dirige la conversación según el estado
  */
@@ -116,9 +119,27 @@ async function handleIncomingMessage(sock, message) {
         response = await handleInitialGreeting(sock, remoteJid, prospectState);
     }
     
-    // Enviar respuesta al usuario
+    // Enviar respuesta al usuario, evitando duplicados
     if (response) {
-      await sendMessage(sock, remoteJid, response);
+      // Verificar si este mensaje ya se envió recientemente (en los últimos 10 segundos)
+      const key = `${senderNumber}:${response.substring(0, 20)}`;
+      const now = Date.now();
+      const lastSent = recentMessages.get(key);
+      
+      if (!lastSent || (now - lastSent) > 10000) {
+        // Enviar el mensaje y registrar el tiempo
+        await sendMessage(sock, remoteJid, response);
+        recentMessages.set(key, now);
+        
+        // Limpiar mensajes antiguos (más de 1 minuto)
+        for (const [msgKey, timestamp] of recentMessages.entries()) {
+          if (now - timestamp > 60000) {
+            recentMessages.delete(msgKey);
+          }
+        }
+      } else {
+        logger.info(`Mensaje duplicado evitado para ${senderNumber}`);
+      }
     }
     
   } catch (error) {
