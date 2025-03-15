@@ -795,193 +795,87 @@ class CampaignFlow {
     }
   };
 
-  handleMeetingOffer = async (prospectState, message) => {
-    // Analizar si la respuesta es positiva
-    const isPositive = this.isPositiveResponse(message);
-    
-    if (isPositive) {
+  /**
+   * Maneja la oferta de reunión
+   * @param {string} message - Mensaje del usuario
+   * @param {Object} prospectState - Estado del prospecto
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async handleMeetingOffer(message, prospectState) {
+    try {
+      // Analizar la respuesta del usuario con OpenAI
+      const analysisPrompt = `Analiza este mensaje de un cliente respondiendo a una oferta para agendar una reunión o demostración.
+      
+      Mensaje del cliente: "${message}"
+      
+      Determina si el cliente:
+      1. Acepta la oferta de reunión
+      2. Rechaza la oferta de reunión
+      3. Solicita más información antes de decidir
+      4. Su respuesta no es clara
+      
+      Responde ÚNICAMENTE con un objeto JSON con esta estructura exacta:
+      {
+        "intent": "accept" | "reject" | "more_info" | "unclear",
+        "reasoning": string // Breve explicación de tu análisis
+      }`;
+      
+      let analysis;
+      
       try {
-        // Obtener el slot disponible más cercano consultando Google Calendar
-        const { checkCalendarAvailability, getNearestAvailableSlot } = require('../services/calendarService');
-        
-        // Obtener slot disponible más cercano
-        const availableSlot = await getNearestAvailableSlot(prospectState.timezone);
-        
-        // Determinar si el slot es para hoy o mañana
-        let timeDescription;
-        if (availableSlot.isToday) {
-          timeDescription = `hoy a las ${availableSlot.time}`;
-        } else if (availableSlot.isTomorrow) {
-          timeDescription = `mañana a las ${availableSlot.time}`;
-        } else {
-          timeDescription = `el ${availableSlot.date} a las ${availableSlot.time}`;
-        }
-        
-        const response = `¡Excelente! ¿Te parece bien ${timeDescription}? Te enviaré el link de Google Meet para conectarnos.`;
-        
-        // Actualizar estado
-        const newState = {
-          ...prospectState,
-          conversationState: this.states.MEETING_SCHEDULING,
-          suggestedSlot: availableSlot,
-          lastInteraction: new Date()
-        };
-        
-        return {
-          response,
-          newState
-        };
-      } catch (error) {
-        logger.error('Error al obtener slot disponible:', error);
-        
-        // En caso de error, usar el método anterior
-        const suggestedTime = this.suggestNearestTime(prospectState.timezone);
-        
-        const response = `¡Excelente! ¿Te parece bien hoy a las ${suggestedTime.split(' ')[1]}? Te enviaré el link de Google Meet.`;
-        
-        // Actualizar estado
-        const newState = {
-          ...prospectState,
-          conversationState: this.states.MEETING_SCHEDULING,
-          suggestedTime,
-          lastInteraction: new Date()
-        };
-        
-        return {
-          response,
-          newState
-        };
-      }
-    } else {
-      // Ofrecer alternativas
-      const response = `Entiendo. ¿Prefieres programar para otro momento? 
-
-Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horario te funcionaría mejor?`;
-      
-      // Actualizar estado
-      const newState = {
-        ...prospectState,
-        conversationState: this.states.MEETING_SCHEDULING,
-        lastInteraction: new Date()
-      };
-      
-      return {
-        response,
-        newState
-      };
-    }
-  };
-
-  handleMeetingScheduling = async (prospectState, message) => {
-    // Verificar si el mensaje es una respuesta positiva o negativa
-    const isPositive = this.isPositiveResponse(message);
-    const isNegative = message.toLowerCase().includes('no') || 
-                      message.toLowerCase().includes('otro') || 
-                      message.toLowerCase().includes('imposible') || 
-                      message.toLowerCase().includes('no puedo');
-    
-    // Si el cliente acepta la hora sugerida
-    if (isPositive) {
-      // Verificar si tenemos un slot sugerido
-      const suggestedSlot = prospectState.suggestedSlot;
-      const suggestedTime = prospectState.suggestedTime;
-      
-      // Solicitar correo electrónico
-      let timeDescription;
-      if (suggestedSlot) {
-        if (suggestedSlot.isToday) {
-          timeDescription = `hoy a las ${suggestedSlot.time}`;
-        } else if (suggestedSlot.isTomorrow) {
-          timeDescription = `mañana a las ${suggestedSlot.time}`;
-        } else {
-          timeDescription = `el ${suggestedSlot.date} a las ${suggestedSlot.time}`;
-        }
-      } else if (suggestedTime) {
-        // Formato antiguo
-        const timeParts = suggestedTime.split(' ');
-        if (timeParts.length > 1) {
-          timeDescription = `el ${timeParts[0]} a las ${timeParts[1]}`;
-        } else {
-          timeDescription = suggestedTime;
-        }
-      } else {
-        // Si no hay hora sugerida, usar hora actual + 2 horas
-        const defaultTime = moment().add(2, 'hours').format('HH:mm');
-        timeDescription = `hoy a las ${defaultTime}`;
-      }
-      
-      const response = `Perfecto, agendaré la reunión para ${timeDescription}. 
-
-¿Me podrías proporcionar tu correo electrónico corporativo para enviarte la invitación? También puedes indicarme si deseas incluir a alguien más en la reunión.`;
-      
-      // Actualizar estado
-      const newState = {
-        ...prospectState,
-        conversationState: this.states.EMAIL_COLLECTION,
-        selectedSlot: suggestedSlot || { date: moment().format('DD/MM/YYYY'), time: suggestedTime?.split(' ')[1] || moment().add(2, 'hours').format('HH:mm') },
-        lastInteraction: new Date()
-      };
-      
-      return {
-        response,
-        newState
-      };
-    } 
-    // Si el cliente rechaza la hora sugerida
-    else if (isNegative) {
-      try {
-        // Obtener slots alternativos
-        const { getNearestAvailableSlot } = require('../services/calendarService');
-        
-        // Buscar slots para los próximos 3 días
-        const availableSlot1 = await getNearestAvailableSlot(prospectState.timezone, 1);
-        const availableSlot2 = await getNearestAvailableSlot(prospectState.timezone, 3);
-        
-        // Filtrar para evitar duplicados
-        let alternativeSlots = [availableSlot1];
-        if (availableSlot2.dateTime !== availableSlot1.dateTime) {
-          alternativeSlots.push(availableSlot2);
-        }
-        
-        // Formatear las alternativas
-        const slotDescriptions = alternativeSlots.map(slot => {
-          if (slot.isToday) {
-            return `hoy a las ${slot.time}`;
-          } else if (slot.isTomorrow) {
-            return `mañana a las ${slot.time}`;
-          } else {
-            return `el ${slot.date} a las ${slot.time}`;
-          }
+        // Intentar usar OpenAI para el análisis
+        const openAIResponse = await generateOpenAIResponse({
+          role: 'system',
+          content: analysisPrompt
         });
         
-        let response;
-        if (slotDescriptions.length > 1) {
-          response = `Entiendo que ese horario no te funciona. Te propongo estas alternativas:
-
-1. ${slotDescriptions[0]}
-2. ${slotDescriptions[1]}
-
-¿Cuál de estas opciones te funciona mejor?`;
-        } else {
-          response = `Entiendo que ese horario no te funciona. ¿Te parece bien ${slotDescriptions[0]}?`;
-        }
+        analysis = JSON.parse(openAIResponse);
+        logger.info('Análisis de OpenAI para oferta de reunión:', analysis);
+      } catch (error) {
+        logger.error('Error al analizar respuesta con OpenAI:', error.message);
         
-        // Actualizar estado
-        const newState = {
-          ...prospectState,
-          alternativeSlots,
-          lastInteraction: new Date()
-        };
+        // Fallback a análisis simple si OpenAI falla
+        analysis = this.analyzeSimpleMeetingResponse(message);
+        logger.info('Usando análisis simple como fallback para oferta de reunión:', analysis);
+      }
+      
+      // Manejar según el tipo de respuesta
+      if (analysis.intent === 'accept') {
+        // Cliente acepta la oferta de reunión
+        // Usar el nuevo método de invitationFlow para ofrecer un horario disponible
+        const invitationFlow = new invitationFlow();
+        return await invitationFlow.offerAvailableTimeSlot(prospectState);
+      } else if (analysis.intent === 'reject') {
+        // Cliente rechaza la oferta de reunión
+        const response = `Entiendo que por ahora no estás interesado en una reunión. Si en el futuro necesitas más información o quieres conocer más sobre nuestros servicios, no dudes en contactarnos. ¿Hay algo más en lo que pueda ayudarte?`;
         
         return {
           response,
-          newState
+          newState: {
+            ...prospectState,
+            conversationState: 'qualification',
+            qualificationStep: 'rejected_meeting',
+            lastInteraction: new Date()
+          }
         };
-      } catch (error) {
-        logger.error('Error al obtener slots alternativos:', error);
+      } else if (analysis.intent === 'more_info') {
+        // Cliente solicita más información
+        const response = `Claro, entiendo que necesitas más información antes de decidir. Logifit es una solución tecnológica que ayuda a prevenir accidentes laborales mediante el monitoreo de fatiga y somnolencia en tiempo real. Nuestro sistema utiliza inteligencia artificial para detectar signos de fatiga en los conductores y operadores, enviando alertas inmediatas para prevenir accidentes.
+
+¿Hay algún aspecto específico sobre el que te gustaría saber más? ¿O prefieres que agendemos una demostración para que puedas ver el sistema en acción?`;
         
-        // En caso de error, ofrecer alternativas genéricas
-        const response = `Entiendo que ese horario no te funciona. ¿Podrías indicarme qué día y horario te resultaría más conveniente? Tenemos disponibilidad de lunes a viernes de 9:00 a 18:00 hrs.`;
+        return {
+          response,
+          newState: {
+            ...prospectState,
+            conversationState: 'qualification',
+            qualificationStep: 'providing_info',
+            lastInteraction: new Date()
+          }
+        };
+      } else {
+        // Respuesta no clara
+        const response = `Disculpa, no estoy seguro si estás interesado en agendar una reunión para conocer más sobre Logifit. ¿Te gustaría que coordinemos una breve demostración para mostrarte cómo funciona nuestro sistema?`;
         
         return {
           response,
@@ -991,311 +885,167 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
           }
         };
       }
-    } 
-    // Si el mensaje contiene una propuesta de horario del cliente
-    else {
-      // Intentar extraer fecha y hora del mensaje
-      const extractedDateTime = this.extractTimeFromMessage(message);
+    } catch (error) {
+      logger.error('Error en handleMeetingOffer:', error);
       
-      if (extractedDateTime) {
-        // El cliente ha propuesto un horario específico
-        const proposedDate = moment(extractedDateTime);
-        
-        // Verificar si el horario propuesto es válido (horario laboral y no en el pasado)
-        const isValidTime = this.isValidProposedTime(proposedDate);
-        
-        if (isValidTime) {
-          // Formatear para mostrar al usuario
-          const formattedDate = proposedDate.format('DD/MM/YYYY');
-          const formattedTime = proposedDate.format('HH:mm');
-          
-          // Solicitar correo electrónico
-          const response = `Perfecto, agendaré la reunión para el ${formattedDate} a las ${formattedTime}. 
+      // Respuesta genérica en caso de error
+      const response = `Disculpa, tuve un problema procesando tu respuesta. ¿Te gustaría que agendemos una reunión para mostrarte cómo Logifit puede ayudar a tu empresa?`;
+      
+      return {
+        response,
+        newState: {
+          ...prospectState,
+          lastInteraction: new Date()
+        }
+      };
+    }
+  }
 
-¿Me podrías proporcionar tu correo electrónico corporativo para enviarte la invitación?`;
-          
-          // Actualizar estado
-          const newState = {
-            ...prospectState,
-            conversationState: this.states.EMAIL_COLLECTION,
-            selectedSlot: {
-              date: formattedDate,
-              time: formattedTime,
-              dateTime: proposedDate.toISOString()
-            },
-            lastInteraction: new Date()
-          };
-          
-          return {
-            response,
-            newState
-          };
-        } else {
-          // El horario propuesto no es válido
-          const response = `Lo siento, pero el horario que propones no está dentro de nuestro horario laboral o ya ha pasado. Nuestro horario de atención es de lunes a viernes de 9:00 a 18:00 hrs.
+  /**
+   * Analiza la respuesta simple a una oferta de reunión (método de fallback)
+   * @param {string} message - Mensaje del cliente
+   * @returns {Object} - Resultado del análisis
+   */
+  analyzeSimpleMeetingResponse(message) {
+    const lowerMessage = message.toLowerCase();
+    
+    // Patrones para respuestas positivas
+    const positivePatterns = [
+      /\bs[ií]\b/i,
+      /\bclaro\b/i,
+      /\bpor supuesto\b/i,
+      /\bde acuerdo\b/i,
+      /\bok\b/i,
+      /\bbueno\b/i,
+      /\bexcelente\b/i,
+      /\bperfecto\b/i,
+      /\bme parece bien\b/i,
+      /\bme gustaría\b/i,
+      /\bquiero\b/i,
+      /\binteresa\b/i
+    ];
+    
+    // Patrones para respuestas negativas
+    const negativePatterns = [
+      /\bno\b/i,
+      /\bno puedo\b/i,
+      /\bno quiero\b/i,
+      /\bno me interesa\b/i,
+      /\bno gracias\b/i,
+      /\bno es necesario\b/i,
+      /\bno hace falta\b/i
+    ];
+    
+    // Patrones para solicitud de más información
+    const moreInfoPatterns = [
+      /\bmás información\b/i,
+      /\bcuéntame más\b/i,
+      /\bexplícame\b/i,
+      /\bdetalles\b/i,
+      /\bcómo funciona\b/i,
+      /\bqué es\b/i,
+      /\bcuánto cuesta\b/i,
+      /\bprecio\b/i,
+      /\btarifa\b/i
+    ];
+    
+    // Verificar si es una respuesta positiva
+    if (positivePatterns.some(pattern => pattern.test(lowerMessage))) {
+      return {
+        intent: 'accept',
+        reasoning: 'El cliente acepta la oferta de reunión'
+      };
+    }
+    
+    // Verificar si es una respuesta negativa
+    if (negativePatterns.some(pattern => pattern.test(lowerMessage))) {
+      return {
+        intent: 'reject',
+        reasoning: 'El cliente rechaza la oferta de reunión'
+      };
+    }
+    
+    // Verificar si solicita más información
+    if (moreInfoPatterns.some(pattern => pattern.test(lowerMessage))) {
+      return {
+        intent: 'more_info',
+        reasoning: 'El cliente solicita más información antes de decidir'
+      };
+    }
+    
+    // Si no se puede determinar
+    return {
+      intent: 'unclear',
+      reasoning: 'No se puede determinar claramente la respuesta del cliente'
+    };
+  }
 
-¿Podrías proponerme otro horario que te funcione dentro de ese rango?`;
+  /**
+   * Maneja la programación de reuniones
+   * @param {string} message - Mensaje del usuario
+   * @param {Object} prospectState - Estado del prospecto
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async handleMeetingScheduling(message, prospectState) {
+    try {
+      // Usar el flujo de invitación para manejar la programación
+      const invitationFlow = new invitationFlow();
+      
+      // Determinar el paso actual en el flujo de invitación
+      const invitationStep = prospectState.invitationStep || 'schedule_confirmation';
+      
+      switch (invitationStep) {
+        case 'schedule_confirmation':
+          return await invitationFlow.handleScheduleConfirmation(message, prospectState);
+          
+        case 'email_collection':
+          return await invitationFlow.handleEmailCollection(message, prospectState);
+          
+        case 'follow_up':
+          // Manejar seguimiento después de la creación de la cita
+          const response = `¡Perfecto! Nos vemos en la reunión. Si necesitas hacer algún cambio o tienes alguna pregunta antes de la reunión, no dudes en avisarme.`;
           
           return {
             response,
             newState: {
               ...prospectState,
+              conversationState: 'follow_up',
               lastInteraction: new Date()
             }
           };
-        }
-      } else {
-        // No se pudo extraer un horario del mensaje
-        const response = `No pude entender claramente el horario que prefieres. ¿Podrías indicarme qué día y hora te resultaría más conveniente? Por ejemplo: "mañana a las 10:00" o "el viernes a las 15:00".`;
-        
-        return {
-          response,
-          newState: {
-            ...prospectState,
-            lastInteraction: new Date()
-          }
-        };
+          
+        default:
+          // Si no hay un paso definido, ofrecer un horario
+          return await invitationFlow.offerAvailableTimeSlot(prospectState);
       }
-    }
-  };
-
-  /**
-   * Verifica si una fecha y hora propuesta es válida (horario laboral y no en el pasado)
-   * @param {Object} proposedDate - Fecha propuesta (objeto moment)
-   * @returns {boolean} - True si la fecha es válida
-   */
-  isValidProposedTime(proposedDate) {
-    // Verificar que no sea en el pasado
-    if (proposedDate.isBefore(moment())) {
-      return false;
-    }
-    
-    // Verificar que sea día laboral (lunes a viernes)
-    const day = proposedDate.day();
-    if (day === 0 || day === 6) { // 0 = domingo, 6 = sábado
-      return false;
-    }
-    
-    // Verificar que sea horario laboral (9:00 - 18:00)
-    const hour = proposedDate.hour();
-    if (hour < 9 || hour >= 18) {
-      return false;
-    }
-    
-    // Verificar que no sea hora de almuerzo (13:00 - 14:00)
-    if (hour === 13) {
-      return false;
-    }
-    
-    return true;
-  }
-
-  handleEmailCollection = async (prospectState, message) => {
-    // Extraer correos electrónicos
-    const emails = this.extractEmails(message);
-    
-    if (emails.length > 0) {
-      try {
-        // Obtener el slot seleccionado
-        const selectedSlot = prospectState.selectedSlot;
-        
-        if (!selectedSlot) {
-          throw new Error('No se encontró información del slot seleccionado');
-        }
-        
-        // Crear detalles de la cita
-        const appointmentDetails = {
-          date: selectedSlot.date,
-          time: selectedSlot.time,
-          dateTime: selectedSlot.dateTime || moment(`${selectedSlot.date} ${selectedSlot.time}`, 'DD/MM/YYYY HH:mm').toISOString()
-        };
-        
-        // Extraer posible nombre de empresa del mensaje o usar el almacenado
-        let company = prospectState.company;
-        if (!company && message) {
-          // Buscar posible nombre de empresa en el mensaje
-          const companyMatch = message.match(/(?:empresa|compañía|organización|trabajo en|trabajo para)\s+([A-Za-zÁÉÍÓÚáéíóúÑñ\s&.,]+)/i);
-          if (companyMatch && companyMatch[1]) {
-            company = companyMatch[1].trim();
-          }
-        }
-        
-        // Usar el webhook para crear la cita en lugar de crearla directamente
-        const webhookData = formatAppointmentData(
-          { 
-            ...prospectState, 
-            emails,
-            company: company || 'Empresa del cliente'
-          },
-          appointmentDetails
-        );
-        
-        // Enviar datos al webhook
-        const webhookResult = await sendAppointmentToMake(webhookData);
-        
-        if (!webhookResult.success) {
-          logger.error('Error al enviar datos de cita al webhook:', webhookResult.error);
-          throw new Error('Error al crear la cita a través del webhook');
-        }
-        
-        logger.info('Cita creada exitosamente a través del webhook');
-        
-        // Determinar si la cita es para hoy, mañana o un día específico
-        let dateDescription;
-        const appointmentDate = moment(appointmentDetails.dateTime);
-        const now = moment();
-        
-        if (appointmentDate.isSame(now, 'day')) {
-          dateDescription = `hoy a las ${appointmentDetails.time}`;
-        } else if (appointmentDate.isSame(now.clone().add(1, 'day'), 'day')) {
-          dateDescription = `mañana a las ${appointmentDetails.time}`;
-        } else {
-          dateDescription = `el ${appointmentDetails.date} a las ${appointmentDetails.time}`;
-        }
-        
-        const response = `¡Listo! He programado la reunión para ${dateDescription}.
-
-🚀 ¡Únete a nuestra sesión de Logifit! ✨ Logifit es una moderna herramienta tecnológica inteligente adecuada para la gestión del descanso y salud de los colaboradores. Brindamos servicios de monitoreo preventivo como apoyo a la mejora de la salud y prevención de accidentes, con la finalidad de salvaguardar la vida de los trabajadores y ayudarles a alcanzar el máximo de su productividad en el proyecto.
-✨🌞 ¡Tu bienestar es nuestra prioridad! ⚒️👍
-
-Te he enviado una invitación por correo electrónico con los detalles y el enlace para la llamada.
-
-Por favor, confirma que has recibido la invitación respondiendo "Confirmado" o "Recibido".`;
-        
-        // Actualizar estado pero mantener en FOLLOW_UP en lugar de COMPLETED
-        const newState = {
-          ...prospectState,
-          conversationState: this.states.FOLLOW_UP,
-          emails,
-          company: company || prospectState.company, // Guardar la empresa si se encontró
-          appointmentDetails,
-          appointmentCreated: true, // Marcar que la cita fue creada
-          lastInteraction: new Date()
-        };
-        
-        return {
-          response,
-          newState
-        };
-      } catch (error) {
-        logger.error('Error al crear cita:', error);
-        
-        const response = `Lo siento, tuve un problema al agendar la reunión. ¿Podrías confirmarme nuevamente tu disponibilidad?`;
-        
-        return {
-          response,
-          newState: prospectState
-        };
-      }
-    } else {
-      // No se encontraron correos electrónicos
-      const response = `No pude identificar un correo electrónico válido. Por favor, comparte conmigo tu correo electrónico corporativo para poder enviarte la invitación a la reunión.`;
+    } catch (error) {
+      logger.error('Error en handleMeetingScheduling:', error);
+      
+      // Respuesta genérica en caso de error
+      const response = `Disculpa, tuve un problema al procesar la programación de la reunión. ¿Podrías indicarme nuevamente tu disponibilidad?`;
       
       return {
         response,
-        newState: prospectState
-      };
-    }
-  };
-
-  handleFollowUp = async (prospectState, message) => {
-    // Verificar si ya se creó una cita y estamos esperando confirmación
-    if (prospectState.appointmentCreated) {
-      // Verificar si el mensaje es una confirmación
-      const isConfirmation = /confirm|recib|ok|listo|gracias|recibido/i.test(message);
-      
-      if (isConfirmation) {
-        // El cliente ha confirmado la cita
-        const response = `¡Perfecto! Gracias por confirmar. Nos vemos en la reunión el ${prospectState.appointmentDetails.date} a las ${prospectState.appointmentDetails.time}.
-
-Si necesitas hacer algún cambio o tienes alguna pregunta antes de la reunión, no dudes en escribirme.
-
-¡Que tengas un excelente día!`;
-        
-        // Actualizar estado a COMPLETED
-        const newState = {
+        newState: {
           ...prospectState,
-          conversationState: this.states.COMPLETED,
-          confirmationReceived: true,
           lastInteraction: new Date()
-        };
-        
-        return {
-          response,
-          newState
-        };
-      } else {
-        // El cliente respondió algo diferente a una confirmación
-        const response = `Gracias por tu mensaje. ¿Has recibido la invitación para nuestra reunión programada para el ${prospectState.appointmentDetails.date} a las ${prospectState.appointmentDetails.time}?
-
-Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
-        
-        return {
-          response,
-          newState: prospectState
-        };
-      }
-    }
-    
-    // Comportamiento original para seguimiento sin cita creada
-    // Usar OpenAI para generar una respuesta personalizada
-    const prompt = `El prospecto ${prospectState.name} ha preguntado: "${message}" sobre nuestro sistema de control de fatiga y somnolencia. 
-    Basado en sus respuestas previas: ${JSON.stringify(prospectState.qualificationAnswers)}.
-    
-    Genera una respuesta breve y persuasiva que intente llevar la conversación hacia agendar una demostración del producto. Menciona que podemos hacer una llamada rápida de 20 minutos para mostrarle cómo funciona el sistema.`;
-    
-    const response = await generateOpenAIResponse({
-      role: 'system',
-      content: prompt
-    });
-    
-    // Actualizar estado
-    const newState = {
-      ...prospectState,
-      conversationState: this.states.MEETING_OFFER,
-      lastInteraction: new Date()
-    };
-    
-    return {
-      response,
-      newState
-    };
-  };
-
-  analyzeInterest = async (qualificationAnswers) => {
-    const answersText = Object.entries(qualificationAnswers)
-      .map(([question, answer]) => `${question}: ${answer}`)
-      .join('\n');
-    
-    const analysis = await generateOpenAIResponse({
-      role: 'system',
-      content: `Analiza las siguientes respuestas de un prospecto para determinar su nivel de interés en nuestro sistema de control de fatiga y somnolencia.
-      
-      Respuestas del prospecto:
-      ${answersText}
-      
-      Proporciona un análisis en formato JSON con los siguientes campos:
-      - highInterest: booleano que indica si el prospecto muestra un alto nivel de interés
-      - interestScore: puntuación de 1 a 10 del nivel de interés
-      - shouldOfferAppointment: booleano que indica si deberíamos ofrecer programar una cita
-      - reasoning: breve explicación de tu análisis
-      
-      IMPORTANTE: Responde ÚNICAMENTE con el objeto JSON, sin ningún texto adicional, comillas de código o formato markdown.`
-    });
-    
-    try {
-      return JSON.parse(analysis);
-    } catch (error) {
-      logger.error('Error al parsear análisis:', error);
-      // Valor por defecto
-      return {
-        highInterest: true,
-        interestScore: 7,
-        shouldOfferAppointment: true,
-        reasoning: 'No se pudo analizar correctamente, asumiendo interés por defecto'
+        }
       };
     }
-  };
+  }
+
+  /**
+   * Sugiere el tiempo más cercano disponible (MÉTODO DEPRECADO - Usar invitationFlow.offerAvailableTimeSlot)
+   * @param {Object} prospectState - Estado del prospecto
+   * @returns {Promise<Object>} - Respuesta y nuevo estado
+   */
+  async suggestNearestTime(prospectState) {
+    logger.warn('Método suggestNearestTime está deprecado. Usar invitationFlow.offerAvailableTimeSlot');
+    
+    // Usar el nuevo método del flujo de invitación
+    const invitationFlow = new invitationFlow();
+    return await invitationFlow.offerAvailableTimeSlot(prospectState);
+  }
 
   extractName = (message) => {
     // Implementación básica, se puede mejorar con NLP
@@ -1338,60 +1088,6 @@ Por favor, confirma que la has recibido o si necesitas que te la reenvíe.`;
     ];
     
     return positivePatterns.some(pattern => pattern.test(message));
-  };
-
-  suggestNearestTime = (timezone = 'America/Lima') => {
-    // Obtener hora actual en la zona horaria del cliente
-    const now = moment().tz(timezone);
-    
-    // Crear una copia para trabajar
-    let suggestedTime = now.clone();
-    
-    // Avanzar al menos 1 hora desde ahora
-    suggestedTime.add(1, 'hour').startOf('hour');
-    
-    // Ajustar según día de la semana y hora
-    const adjustTimeForWorkingHours = (time) => {
-      const day = time.day();
-      const hour = time.hour();
-      
-      // Si es fin de semana (0 = domingo, 6 = sábado), avanzar al lunes
-      if (day === 0) { // Domingo
-        time.add(1, 'day').hour(9).minute(0);
-        return time;
-      } else if (day === 6) { // Sábado
-        time.add(2, 'day').hour(9).minute(0);
-        return time;
-      }
-      
-      // Ajustar según hora del día
-      if (hour < 9) {
-        // Antes del horario laboral, sugerir 9:00 AM
-        time.hour(9).minute(0);
-      } else if (hour >= 13 && hour < 14) {
-        // Durante el refrigerio, sugerir 2:00 PM
-        time.hour(14).minute(0);
-      } else if (hour >= 18) {
-        // Después del horario laboral, sugerir 9:00 AM del día siguiente
-        // Verificar si el día siguiente es fin de semana
-        const nextDay = time.clone().add(1, 'day');
-        if (nextDay.day() === 6) { // Si es sábado
-          time.add(3, 'day').hour(9).minute(0); // Avanzar al lunes
-        } else if (nextDay.day() === 0) { // Si es domingo
-          time.add(2, 'day').hour(9).minute(0); // Avanzar al lunes
-        } else {
-          time.add(1, 'day').hour(9).minute(0); // Avanzar al día siguiente
-        }
-      }
-      
-      return time;
-    };
-    
-    // Aplicar ajustes de horario laboral
-    suggestedTime = adjustTimeForWorkingHours(suggestedTime);
-    
-    // Formatear la fecha y hora
-    return suggestedTime.format('YYYY-MM-DD HH:mm');
   };
 
   extractTimeFromMessage = (message) => {

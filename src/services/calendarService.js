@@ -298,172 +298,156 @@ async function createCustomEvent(prospectState, customEvent) {
 }
 
 /**
- * Obtiene el slot disponible más cercano a la hora actual
- * @param {string} timezone - Zona horaria del cliente (por defecto: 'America/Lima')
- * @param {number} daysToCheck - Número de días a verificar (por defecto: 2)
- * @returns {Promise<Object>} - Slot disponible más cercano
+ * Obtiene el slot disponible más cercano en el calendario
+ * @param {string} timezone - Zona horaria del usuario (por defecto: America/Lima)
+ * @param {number} daysAhead - Número de días hacia adelante para buscar (por defecto: 0)
+ * @returns {Promise<Object>} - Información del slot disponible
  */
-async function getNearestAvailableSlot(timezone = 'America/Lima', daysToCheck = 2) {
+async function getNearestAvailableSlot(timezone = 'America/Lima', daysAhead = 0) {
   try {
-    // Si no hay credenciales válidas, devolver un slot simulado
-    if (!hasValidCredentials || !calendar) {
-      logger.warn('No hay credenciales válidas para Google Calendar, generando slot simulado');
-      return generateSimulatedNearestSlot(timezone);
+    // Obtener fecha actual en la zona horaria del usuario
+    const now = moment().tz(timezone || 'America/Lima');
+    
+    // Ajustar fecha según daysAhead
+    const targetDate = now.clone().add(daysAhead, 'days');
+    
+    // Si es fin de semana, ajustar al próximo día laboral
+    const dayOfWeek = targetDate.day(); // 0 = domingo, 6 = sábado
+    if (dayOfWeek === 0) { // Domingo
+      targetDate.add(1, 'day');
+    } else if (dayOfWeek === 6) { // Sábado
+      targetDate.add(2, 'days');
     }
     
-    // Obtener fecha actual en la zona horaria del cliente
-    const now = moment().tz(timezone);
-    
-    // Fecha de fin (N días después)
-    const endDate = moment(now).add(daysToCheck, 'days').endOf('day');
-    
-    // Obtener eventos del calendario
-    const response = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: now.toISOString(),
-      timeMax: endDate.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
-    });
-    
-    const events = response.data.items;
-    
-    // Crear array para almacenar slots disponibles
-    const availableSlots = [];
-    
-    // Verificar disponibilidad para hoy y mañana
-    const currentDate = now.clone().startOf('hour');
-    
-    // Avanzar al menos 1 hora desde ahora (para dar tiempo a prepararse)
-    currentDate.add(1, 'hour');
-    
-    // Iterar por las próximas horas hasta el final del período
-    while (currentDate.isBefore(endDate)) {
-      const dayOfWeek = currentDate.day();
-      const hour = currentDate.hour();
+    // Hora de inicio para buscar slots (9:00 AM si es un día futuro, hora actual + 2 horas si es hoy)
+    let startHour;
+    if (daysAhead === 0 && targetDate.isSame(now, 'day')) {
+      // Si es hoy, empezar 2 horas después de la hora actual
+      startHour = now.clone().add(2, 'hours');
       
-      // Solo considerar días laborables (lunes a viernes)
-      if (dayOfWeek >= 1 && dayOfWeek <= 5) {
-        // Solo considerar horario laboral (9:00 - 18:00)
-        if (hour >= 9 && hour < 18) {
-          // Saltar hora de almuerzo (13:00 - 14:00)
-          if (hour !== 13) {
-            const slotStart = currentDate.clone();
-            const slotEnd = slotStart.clone().add(30, 'minutes');
-            
-            // Verificar si el slot está disponible
-            const isAvailable = !events.some(event => {
-              const eventStart = moment(event.start.dateTime || event.start.date);
-              const eventEnd = moment(event.end.dateTime || event.end.date);
-              
-              return (
-                (slotStart.isSameOrAfter(eventStart) && slotStart.isBefore(eventEnd)) ||
-                (slotEnd.isAfter(eventStart) && slotEnd.isSameOrBefore(eventEnd)) ||
-                (slotStart.isSameOrBefore(eventStart) && slotEnd.isSameOrAfter(eventEnd))
-              );
-            });
-            
-            if (isAvailable) {
-              availableSlots.push({
-                date: slotStart.format('DD/MM/YYYY'),
-                time: slotStart.format('HH:mm'),
-                dateTime: slotStart.toISOString(),
-                isToday: slotStart.isSame(now, 'day'),
-                isTomorrow: slotStart.isSame(now.clone().add(1, 'day'), 'day')
-              });
-            }
-          }
-        }
+      // Redondear a la siguiente hora completa
+      if (startHour.minute() > 0) {
+        startHour.add(1, 'hour').minute(0);
       }
       
-      // Avanzar 30 minutos
-      currentDate.add(30, 'minutes');
+      // Si ya pasó el horario laboral, mover al siguiente día
+      if (startHour.hour() >= 18) {
+        targetDate.add(1, 'day');
+        startHour = targetDate.clone().hour(9).minute(0);
+        
+        // Verificar si el nuevo día es fin de semana
+        const newDayOfWeek = targetDate.day();
+        if (newDayOfWeek === 0) { // Domingo
+          targetDate.add(1, 'day');
+          startHour = targetDate.clone().hour(9).minute(0);
+        } else if (newDayOfWeek === 6) { // Sábado
+          targetDate.add(2, 'days');
+          startHour = targetDate.clone().hour(9).minute(0);
+        }
+      }
+    } else {
+      // Si es un día futuro, empezar a las 9:00 AM
+      startHour = targetDate.clone().hour(9).minute(0);
     }
     
-    // Si no hay slots disponibles, generar uno simulado
-    if (availableSlots.length === 0) {
-      logger.warn('No se encontraron slots disponibles, generando slot simulado');
-      return generateSimulatedNearestSlot(timezone);
+    // Ajustar si la hora de inicio es antes de las 9:00 AM
+    if (startHour.hour() < 9) {
+      startHour.hour(9).minute(0);
     }
     
-    // Ordenar slots por cercanía (primero los de hoy, luego los de mañana)
-    availableSlots.sort((a, b) => {
-      // Priorizar slots de hoy
-      if (a.isToday && !b.isToday) return -1;
-      if (!a.isToday && b.isToday) return 1;
+    // Hora de fin del día laboral (18:00)
+    const endHour = targetDate.clone().hour(18).minute(0);
+    
+    // Duración de cada slot en minutos
+    const slotDuration = 60;
+    
+    // Obtener eventos del calendario para el día objetivo
+    // Aquí deberíamos integrar con la API de Google Calendar
+    // Por ahora, simularemos algunos eventos ocupados
+    const busySlots = await getBusySlots(targetDate.format('YYYY-MM-DD'));
+    
+    // Generar todos los slots posibles para el día
+    const allSlots = [];
+    let currentSlot = startHour.clone();
+    
+    while (currentSlot.isBefore(endHour)) {
+      // Saltar la hora de almuerzo (13:00 - 14:00)
+      if (currentSlot.hour() === 13) {
+        currentSlot.add(1, 'hour');
+        continue;
+      }
       
-      // Luego priorizar slots de mañana
-      if (a.isTomorrow && !b.isTomorrow) return -1;
-      if (!a.isTomorrow && b.isTomorrow) return 1;
+      // Verificar si el slot está ocupado
+      const isSlotBusy = busySlots.some(busySlot => {
+        const slotStart = currentSlot.clone();
+        const slotEnd = currentSlot.clone().add(slotDuration, 'minutes');
+        
+        return (
+          (moment(busySlot.start).isBefore(slotEnd) && moment(busySlot.end).isAfter(slotStart)) ||
+          moment(busySlot.start).isSame(slotStart)
+        );
+      });
       
-      // Finalmente ordenar por hora
-      return moment(a.dateTime).diff(moment(b.dateTime));
-    });
+      if (!isSlotBusy) {
+        allSlots.push({
+          date: currentSlot.format('DD/MM/YYYY'),
+          time: currentSlot.format('HH:mm'),
+          dateTime: currentSlot.toISOString(),
+          isToday: currentSlot.isSame(now, 'day'),
+          isTomorrow: currentSlot.isSame(now.clone().add(1, 'day'), 'day')
+        });
+      }
+      
+      // Avanzar al siguiente slot
+      currentSlot.add(slotDuration, 'minutes');
+    }
+    
+    // Si no hay slots disponibles, buscar en el siguiente día
+    if (allSlots.length === 0) {
+      return getNearestAvailableSlot(timezone, daysAhead + 1);
+    }
     
     // Devolver el primer slot disponible
-    return availableSlots[0];
+    return allSlots[0];
   } catch (error) {
-    logger.error('Error al obtener slot disponible más cercano:', error);
-    // En caso de error, devolver un slot simulado
-    return generateSimulatedNearestSlot(timezone);
+    logger.error('Error al obtener slot disponible:', error);
+    throw error;
   }
 }
 
 /**
- * Genera un slot disponible simulado para cuando no se puede consultar el calendario
- * @param {string} timezone - Zona horaria del cliente
- * @returns {Object} - Slot simulado
+ * Obtiene los slots ocupados para una fecha específica
+ * @param {string} date - Fecha en formato YYYY-MM-DD
+ * @returns {Promise<Array>} - Lista de slots ocupados
  */
-function generateSimulatedNearestSlot(timezone = 'America/Lima') {
-  // Obtener hora actual en la zona horaria del cliente
-  const now = moment().tz(timezone);
-  
-  // Crear una copia para trabajar
-  let suggestedTime = now.clone();
-  
-  // Avanzar al menos 1 hora desde ahora
-  suggestedTime.add(1, 'hour').startOf('hour');
-  
-  // Ajustar según día de la semana y hora
-  const day = suggestedTime.day();
-  const hour = suggestedTime.hour();
-  
-  // Si es fin de semana (0 = domingo, 6 = sábado), avanzar al lunes
-  if (day === 0) { // Domingo
-    suggestedTime.add(1, 'day').hour(9).minute(0);
-  } else if (day === 6) { // Sábado
-    suggestedTime.add(2, 'day').hour(9).minute(0);
-  } else {
-    // Ajustar según hora del día
-    if (hour < 9) {
-      // Antes del horario laboral, sugerir 9:00 AM
-      suggestedTime.hour(9).minute(0);
-    } else if (hour >= 13 && hour < 14) {
-      // Durante el refrigerio, sugerir 2:00 PM
-      suggestedTime.hour(14).minute(0);
-    } else if (hour >= 18) {
-      // Después del horario laboral, sugerir 9:00 AM del día siguiente
-      // Verificar si el día siguiente es fin de semana
-      const nextDay = suggestedTime.clone().add(1, 'day');
-      if (nextDay.day() === 6) { // Si es sábado
-        suggestedTime.add(3, 'day').hour(9).minute(0); // Avanzar al lunes
-      } else if (nextDay.day() === 0) { // Si es domingo
-        suggestedTime.add(2, 'day').hour(9).minute(0); // Avanzar al lunes
-      } else {
-        suggestedTime.add(1, 'day').hour(9).minute(0); // Avanzar al día siguiente
+async function getBusySlots(date) {
+  try {
+    // Aquí deberíamos integrar con la API de Google Calendar
+    // Por ahora, simularemos algunos eventos ocupados
+    
+    // Convertir la fecha a objeto Date
+    const targetDate = moment(date, 'YYYY-MM-DD').toDate();
+    const dateString = moment(targetDate).format('YYYY-MM-DD');
+    
+    // Simular eventos ocupados (en un entorno real, esto vendría de Google Calendar)
+    const simulatedBusySlots = [
+      // Simular una reunión de 10:00 a 11:00
+      {
+        start: `${dateString}T10:00:00`,
+        end: `${dateString}T11:00:00`
+      },
+      // Simular una reunión de 15:00 a 16:30
+      {
+        start: `${dateString}T15:00:00`,
+        end: `${dateString}T16:30:00`
       }
-    }
+    ];
+    
+    return simulatedBusySlots;
+  } catch (error) {
+    logger.error('Error al obtener slots ocupados:', error);
+    return []; // Devolver array vacío en caso de error
   }
-  
-  // Formatear la fecha y hora
-  return {
-    date: suggestedTime.format('DD/MM/YYYY'),
-    time: suggestedTime.format('HH:mm'),
-    dateTime: suggestedTime.toISOString(),
-    isToday: suggestedTime.isSame(now, 'day'),
-    isTomorrow: suggestedTime.isSame(now.clone().add(1, 'day'), 'day'),
-    isSimulated: true
-  };
 }
 
 module.exports = {
