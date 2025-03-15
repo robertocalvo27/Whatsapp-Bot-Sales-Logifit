@@ -297,8 +297,179 @@ async function createCustomEvent(prospectState, customEvent) {
   }
 }
 
+/**
+ * Obtiene el slot disponible más cercano a la hora actual
+ * @param {string} timezone - Zona horaria del cliente (por defecto: 'America/Lima')
+ * @param {number} daysToCheck - Número de días a verificar (por defecto: 2)
+ * @returns {Promise<Object>} - Slot disponible más cercano
+ */
+async function getNearestAvailableSlot(timezone = 'America/Lima', daysToCheck = 2) {
+  try {
+    // Si no hay credenciales válidas, devolver un slot simulado
+    if (!hasValidCredentials || !calendar) {
+      logger.warn('No hay credenciales válidas para Google Calendar, generando slot simulado');
+      return generateSimulatedNearestSlot(timezone);
+    }
+    
+    // Obtener fecha actual en la zona horaria del cliente
+    const now = moment().tz(timezone);
+    
+    // Fecha de fin (N días después)
+    const endDate = moment(now).add(daysToCheck, 'days').endOf('day');
+    
+    // Obtener eventos del calendario
+    const response = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: now.toISOString(),
+      timeMax: endDate.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+    });
+    
+    const events = response.data.items;
+    
+    // Crear array para almacenar slots disponibles
+    const availableSlots = [];
+    
+    // Verificar disponibilidad para hoy y mañana
+    const currentDate = now.clone().startOf('hour');
+    
+    // Avanzar al menos 1 hora desde ahora (para dar tiempo a prepararse)
+    currentDate.add(1, 'hour');
+    
+    // Iterar por las próximas horas hasta el final del período
+    while (currentDate.isBefore(endDate)) {
+      const dayOfWeek = currentDate.day();
+      const hour = currentDate.hour();
+      
+      // Solo considerar días laborables (lunes a viernes)
+      if (dayOfWeek >= 1 && dayOfWeek <= 5) {
+        // Solo considerar horario laboral (9:00 - 18:00)
+        if (hour >= 9 && hour < 18) {
+          // Saltar hora de almuerzo (13:00 - 14:00)
+          if (hour !== 13) {
+            const slotStart = currentDate.clone();
+            const slotEnd = slotStart.clone().add(30, 'minutes');
+            
+            // Verificar si el slot está disponible
+            const isAvailable = !events.some(event => {
+              const eventStart = moment(event.start.dateTime || event.start.date);
+              const eventEnd = moment(event.end.dateTime || event.end.date);
+              
+              return (
+                (slotStart.isSameOrAfter(eventStart) && slotStart.isBefore(eventEnd)) ||
+                (slotEnd.isAfter(eventStart) && slotEnd.isSameOrBefore(eventEnd)) ||
+                (slotStart.isSameOrBefore(eventStart) && slotEnd.isSameOrAfter(eventEnd))
+              );
+            });
+            
+            if (isAvailable) {
+              availableSlots.push({
+                date: slotStart.format('DD/MM/YYYY'),
+                time: slotStart.format('HH:mm'),
+                dateTime: slotStart.toISOString(),
+                isToday: slotStart.isSame(now, 'day'),
+                isTomorrow: slotStart.isSame(now.clone().add(1, 'day'), 'day')
+              });
+            }
+          }
+        }
+      }
+      
+      // Avanzar 30 minutos
+      currentDate.add(30, 'minutes');
+    }
+    
+    // Si no hay slots disponibles, generar uno simulado
+    if (availableSlots.length === 0) {
+      logger.warn('No se encontraron slots disponibles, generando slot simulado');
+      return generateSimulatedNearestSlot(timezone);
+    }
+    
+    // Ordenar slots por cercanía (primero los de hoy, luego los de mañana)
+    availableSlots.sort((a, b) => {
+      // Priorizar slots de hoy
+      if (a.isToday && !b.isToday) return -1;
+      if (!a.isToday && b.isToday) return 1;
+      
+      // Luego priorizar slots de mañana
+      if (a.isTomorrow && !b.isTomorrow) return -1;
+      if (!a.isTomorrow && b.isTomorrow) return 1;
+      
+      // Finalmente ordenar por hora
+      return moment(a.dateTime).diff(moment(b.dateTime));
+    });
+    
+    // Devolver el primer slot disponible
+    return availableSlots[0];
+  } catch (error) {
+    logger.error('Error al obtener slot disponible más cercano:', error);
+    // En caso de error, devolver un slot simulado
+    return generateSimulatedNearestSlot(timezone);
+  }
+}
+
+/**
+ * Genera un slot disponible simulado para cuando no se puede consultar el calendario
+ * @param {string} timezone - Zona horaria del cliente
+ * @returns {Object} - Slot simulado
+ */
+function generateSimulatedNearestSlot(timezone = 'America/Lima') {
+  // Obtener hora actual en la zona horaria del cliente
+  const now = moment().tz(timezone);
+  
+  // Crear una copia para trabajar
+  let suggestedTime = now.clone();
+  
+  // Avanzar al menos 1 hora desde ahora
+  suggestedTime.add(1, 'hour').startOf('hour');
+  
+  // Ajustar según día de la semana y hora
+  const day = suggestedTime.day();
+  const hour = suggestedTime.hour();
+  
+  // Si es fin de semana (0 = domingo, 6 = sábado), avanzar al lunes
+  if (day === 0) { // Domingo
+    suggestedTime.add(1, 'day').hour(9).minute(0);
+  } else if (day === 6) { // Sábado
+    suggestedTime.add(2, 'day').hour(9).minute(0);
+  } else {
+    // Ajustar según hora del día
+    if (hour < 9) {
+      // Antes del horario laboral, sugerir 9:00 AM
+      suggestedTime.hour(9).minute(0);
+    } else if (hour >= 13 && hour < 14) {
+      // Durante el refrigerio, sugerir 2:00 PM
+      suggestedTime.hour(14).minute(0);
+    } else if (hour >= 18) {
+      // Después del horario laboral, sugerir 9:00 AM del día siguiente
+      // Verificar si el día siguiente es fin de semana
+      const nextDay = suggestedTime.clone().add(1, 'day');
+      if (nextDay.day() === 6) { // Si es sábado
+        suggestedTime.add(3, 'day').hour(9).minute(0); // Avanzar al lunes
+      } else if (nextDay.day() === 0) { // Si es domingo
+        suggestedTime.add(2, 'day').hour(9).minute(0); // Avanzar al lunes
+      } else {
+        suggestedTime.add(1, 'day').hour(9).minute(0); // Avanzar al día siguiente
+      }
+    }
+  }
+  
+  // Formatear la fecha y hora
+  return {
+    date: suggestedTime.format('DD/MM/YYYY'),
+    time: suggestedTime.format('HH:mm'),
+    dateTime: suggestedTime.toISOString(),
+    isToday: suggestedTime.isSame(now, 'day'),
+    isTomorrow: suggestedTime.isSame(now.clone().add(1, 'day'), 'day'),
+    isSimulated: true
+  };
+}
+
 module.exports = {
   checkCalendarAvailability,
   createCalendarEvent,
-  hasValidCredentials
+  hasValidCredentials,
+  getNearestAvailableSlot,
+  createCustomEvent
 }; 

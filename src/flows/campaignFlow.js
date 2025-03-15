@@ -1,5 +1,5 @@
 const { generateOpenAIResponse, analyzeResponseRelevance } = require('../services/openaiService');
-const { checkCalendarAvailability, createCalendarEvent } = require('../services/calendarService');
+const { checkCalendarAvailability, createCalendarEvent, getNearestAvailableSlot } = require('../services/calendarService');
 const { searchCompanyInfo, searchCompanyByName } = require('../services/companyService');
 const { sendAppointmentToMake, formatAppointmentData } = require('../services/webhookService');
 const { humanizeResponse } = require('../utils/humanizer');
@@ -800,23 +800,58 @@ class CampaignFlow {
     const isPositive = this.isPositiveResponse(message);
     
     if (isPositive) {
-      // Sugerir horario cercano
-      const suggestedTime = this.suggestNearestTime(prospectState.timezone);
-      
-      const response = `Excelente! ¿Te parece bien hoy a las ${suggestedTime}? Te enviaré el link de Google Meet.`;
-      
-      // Actualizar estado
-      const newState = {
-        ...prospectState,
-        conversationState: this.states.MEETING_SCHEDULING,
-        suggestedTime,
-        lastInteraction: new Date()
-      };
-      
-      return {
-        response,
-        newState
-      };
+      try {
+        // Obtener el slot disponible más cercano consultando Google Calendar
+        const { checkCalendarAvailability, getNearestAvailableSlot } = require('../services/calendarService');
+        
+        // Obtener slot disponible más cercano
+        const availableSlot = await getNearestAvailableSlot(prospectState.timezone);
+        
+        // Determinar si el slot es para hoy o mañana
+        let timeDescription;
+        if (availableSlot.isToday) {
+          timeDescription = `hoy a las ${availableSlot.time}`;
+        } else if (availableSlot.isTomorrow) {
+          timeDescription = `mañana a las ${availableSlot.time}`;
+        } else {
+          timeDescription = `el ${availableSlot.date} a las ${availableSlot.time}`;
+        }
+        
+        const response = `¡Excelente! ¿Te parece bien ${timeDescription}? Te enviaré el link de Google Meet para conectarnos.`;
+        
+        // Actualizar estado
+        const newState = {
+          ...prospectState,
+          conversationState: this.states.MEETING_SCHEDULING,
+          suggestedSlot: availableSlot,
+          lastInteraction: new Date()
+        };
+        
+        return {
+          response,
+          newState
+        };
+      } catch (error) {
+        logger.error('Error al obtener slot disponible:', error);
+        
+        // En caso de error, usar el método anterior
+        const suggestedTime = this.suggestNearestTime(prospectState.timezone);
+        
+        const response = `¡Excelente! ¿Te parece bien hoy a las ${suggestedTime.split(' ')[1]}? Te enviaré el link de Google Meet.`;
+        
+        // Actualizar estado
+        const newState = {
+          ...prospectState,
+          conversationState: this.states.MEETING_SCHEDULING,
+          suggestedTime,
+          lastInteraction: new Date()
+        };
+        
+        return {
+          response,
+          newState
+        };
+      }
     } else {
       // Ofrecer alternativas
       const response = `Entiendo. ¿Prefieres programar para otro momento? 
@@ -838,12 +873,44 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
   };
 
   handleMeetingScheduling = async (prospectState, message) => {
-    // Interpretar la selección de horario
-    const selectedTime = prospectState.suggestedTime || this.extractTimeFromMessage(message);
+    // Verificar si el mensaje es una respuesta positiva o negativa
+    const isPositive = this.isPositiveResponse(message);
+    const isNegative = message.toLowerCase().includes('no') || 
+                      message.toLowerCase().includes('otro') || 
+                      message.toLowerCase().includes('imposible') || 
+                      message.toLowerCase().includes('no puedo');
     
-    if (selectedTime) {
+    // Si el cliente acepta la hora sugerida
+    if (isPositive) {
+      // Verificar si tenemos un slot sugerido
+      const suggestedSlot = prospectState.suggestedSlot;
+      const suggestedTime = prospectState.suggestedTime;
+      
       // Solicitar correo electrónico
-      const response = `Perfecto, agendaré la reunión para ${selectedTime}. 
+      let timeDescription;
+      if (suggestedSlot) {
+        if (suggestedSlot.isToday) {
+          timeDescription = `hoy a las ${suggestedSlot.time}`;
+        } else if (suggestedSlot.isTomorrow) {
+          timeDescription = `mañana a las ${suggestedSlot.time}`;
+        } else {
+          timeDescription = `el ${suggestedSlot.date} a las ${suggestedSlot.time}`;
+        }
+      } else if (suggestedTime) {
+        // Formato antiguo
+        const timeParts = suggestedTime.split(' ');
+        if (timeParts.length > 1) {
+          timeDescription = `el ${timeParts[0]} a las ${timeParts[1]}`;
+        } else {
+          timeDescription = suggestedTime;
+        }
+      } else {
+        // Si no hay hora sugerida, usar hora actual + 2 horas
+        const defaultTime = moment().add(2, 'hours').format('HH:mm');
+        timeDescription = `hoy a las ${defaultTime}`;
+      }
+      
+      const response = `Perfecto, agendaré la reunión para ${timeDescription}. 
 
 ¿Me podrías proporcionar tu correo electrónico corporativo para enviarte la invitación? También puedes indicarme si deseas incluir a alguien más en la reunión.`;
       
@@ -851,7 +918,7 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
       const newState = {
         ...prospectState,
         conversationState: this.states.EMAIL_COLLECTION,
-        selectedTime,
+        selectedSlot: suggestedSlot || { date: moment().format('DD/MM/YYYY'), time: suggestedTime?.split(' ')[1] || moment().add(2, 'hours').format('HH:mm') },
         lastInteraction: new Date()
       };
       
@@ -859,25 +926,169 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
         response,
         newState
       };
-    } else {
-      // No se pudo interpretar el horario
-      const suggestedTime = this.suggestNearestTime(prospectState.timezone);
+    } 
+    // Si el cliente rechaza la hora sugerida
+    else if (isNegative) {
+      try {
+        // Obtener slots alternativos
+        const { getNearestAvailableSlot } = require('../services/calendarService');
+        
+        // Buscar slots para los próximos 3 días
+        const availableSlot1 = await getNearestAvailableSlot(prospectState.timezone, 1);
+        const availableSlot2 = await getNearestAvailableSlot(prospectState.timezone, 3);
+        
+        // Filtrar para evitar duplicados
+        let alternativeSlots = [availableSlot1];
+        if (availableSlot2.dateTime !== availableSlot1.dateTime) {
+          alternativeSlots.push(availableSlot2);
+        }
+        
+        // Formatear las alternativas
+        const slotDescriptions = alternativeSlots.map(slot => {
+          if (slot.isToday) {
+            return `hoy a las ${slot.time}`;
+          } else if (slot.isTomorrow) {
+            return `mañana a las ${slot.time}`;
+          } else {
+            return `el ${slot.date} a las ${slot.time}`;
+          }
+        });
+        
+        let response;
+        if (slotDescriptions.length > 1) {
+          response = `Entiendo que ese horario no te funciona. Te propongo estas alternativas:
+
+1. ${slotDescriptions[0]}
+2. ${slotDescriptions[1]}
+
+¿Cuál de estas opciones te funciona mejor?`;
+        } else {
+          response = `Entiendo que ese horario no te funciona. ¿Te parece bien ${slotDescriptions[0]}?`;
+        }
+        
+        // Actualizar estado
+        const newState = {
+          ...prospectState,
+          alternativeSlots,
+          lastInteraction: new Date()
+        };
+        
+        return {
+          response,
+          newState
+        };
+      } catch (error) {
+        logger.error('Error al obtener slots alternativos:', error);
+        
+        // En caso de error, ofrecer alternativas genéricas
+        const response = `Entiendo que ese horario no te funciona. ¿Podrías indicarme qué día y horario te resultaría más conveniente? Tenemos disponibilidad de lunes a viernes de 9:00 a 18:00 hrs.`;
+        
+        return {
+          response,
+          newState: {
+            ...prospectState,
+            lastInteraction: new Date()
+          }
+        };
+      }
+    } 
+    // Si el mensaje contiene una propuesta de horario del cliente
+    else {
+      // Intentar extraer fecha y hora del mensaje
+      const extractedDateTime = this.extractTimeFromMessage(message);
       
-      const response = `Disculpa, no pude entender el horario. ¿Te parece bien hoy a las ${suggestedTime}? O si prefieres, podemos programarlo para mañana.`;
-      
-      // Actualizar estado
-      const newState = {
-        ...prospectState,
-        suggestedTime,
-        lastInteraction: new Date()
-      };
-      
-      return {
-        response,
-        newState
-      };
+      if (extractedDateTime) {
+        // El cliente ha propuesto un horario específico
+        const proposedDate = moment(extractedDateTime);
+        
+        // Verificar si el horario propuesto es válido (horario laboral y no en el pasado)
+        const isValidTime = this.isValidProposedTime(proposedDate);
+        
+        if (isValidTime) {
+          // Formatear para mostrar al usuario
+          const formattedDate = proposedDate.format('DD/MM/YYYY');
+          const formattedTime = proposedDate.format('HH:mm');
+          
+          // Solicitar correo electrónico
+          const response = `Perfecto, agendaré la reunión para el ${formattedDate} a las ${formattedTime}. 
+
+¿Me podrías proporcionar tu correo electrónico corporativo para enviarte la invitación?`;
+          
+          // Actualizar estado
+          const newState = {
+            ...prospectState,
+            conversationState: this.states.EMAIL_COLLECTION,
+            selectedSlot: {
+              date: formattedDate,
+              time: formattedTime,
+              dateTime: proposedDate.toISOString()
+            },
+            lastInteraction: new Date()
+          };
+          
+          return {
+            response,
+            newState
+          };
+        } else {
+          // El horario propuesto no es válido
+          const response = `Lo siento, pero el horario que propones no está dentro de nuestro horario laboral o ya ha pasado. Nuestro horario de atención es de lunes a viernes de 9:00 a 18:00 hrs.
+
+¿Podrías proponerme otro horario que te funcione dentro de ese rango?`;
+          
+          return {
+            response,
+            newState: {
+              ...prospectState,
+              lastInteraction: new Date()
+            }
+          };
+        }
+      } else {
+        // No se pudo extraer un horario del mensaje
+        const response = `No pude entender claramente el horario que prefieres. ¿Podrías indicarme qué día y hora te resultaría más conveniente? Por ejemplo: "mañana a las 10:00" o "el viernes a las 15:00".`;
+        
+        return {
+          response,
+          newState: {
+            ...prospectState,
+            lastInteraction: new Date()
+          }
+        };
+      }
     }
   };
+
+  /**
+   * Verifica si una fecha y hora propuesta es válida (horario laboral y no en el pasado)
+   * @param {Object} proposedDate - Fecha propuesta (objeto moment)
+   * @returns {boolean} - True si la fecha es válida
+   */
+  isValidProposedTime(proposedDate) {
+    // Verificar que no sea en el pasado
+    if (proposedDate.isBefore(moment())) {
+      return false;
+    }
+    
+    // Verificar que sea día laboral (lunes a viernes)
+    const day = proposedDate.day();
+    if (day === 0 || day === 6) { // 0 = domingo, 6 = sábado
+      return false;
+    }
+    
+    // Verificar que sea horario laboral (9:00 - 18:00)
+    const hour = proposedDate.hour();
+    if (hour < 9 || hour >= 18) {
+      return false;
+    }
+    
+    // Verificar que no sea hora de almuerzo (13:00 - 14:00)
+    if (hour === 13) {
+      return false;
+    }
+    
+    return true;
+  }
 
   handleEmailCollection = async (prospectState, message) => {
     // Extraer correos electrónicos
@@ -885,14 +1096,18 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
     
     if (emails.length > 0) {
       try {
-        // Parsear la hora seleccionada
-        const { date, time, dateTime } = this.parseSelectedTime(prospectState.selectedTime, prospectState.timezone);
+        // Obtener el slot seleccionado
+        const selectedSlot = prospectState.selectedSlot;
+        
+        if (!selectedSlot) {
+          throw new Error('No se encontró información del slot seleccionado');
+        }
         
         // Crear detalles de la cita
         const appointmentDetails = {
-          date,
-          time,
-          dateTime
+          date: selectedSlot.date,
+          time: selectedSlot.time,
+          dateTime: selectedSlot.dateTime || moment(`${selectedSlot.date} ${selectedSlot.time}`, 'DD/MM/YYYY HH:mm').toISOString()
         };
         
         // Extraer posible nombre de empresa del mensaje o usar el almacenado
@@ -925,7 +1140,20 @@ Tengo disponibilidad hoy mismo más tarde o mañana en la mañana. ¿Qué horari
         
         logger.info('Cita creada exitosamente a través del webhook');
         
-        const response = `¡Listo! He programado la reunión para ${date} a las ${time}.
+        // Determinar si la cita es para hoy, mañana o un día específico
+        let dateDescription;
+        const appointmentDate = moment(appointmentDetails.dateTime);
+        const now = moment();
+        
+        if (appointmentDate.isSame(now, 'day')) {
+          dateDescription = `hoy a las ${appointmentDetails.time}`;
+        } else if (appointmentDate.isSame(now.clone().add(1, 'day'), 'day')) {
+          dateDescription = `mañana a las ${appointmentDetails.time}`;
+        } else {
+          dateDescription = `el ${appointmentDetails.date} a las ${appointmentDetails.time}`;
+        }
+        
+        const response = `¡Listo! He programado la reunión para ${dateDescription}.
 
 🚀 ¡Únete a nuestra sesión de Logifit! ✨ Logifit es una moderna herramienta tecnológica inteligente adecuada para la gestión del descanso y salud de los colaboradores. Brindamos servicios de monitoreo preventivo como apoyo a la mejora de la salud y prevención de accidentes, con la finalidad de salvaguardar la vida de los trabajadores y ayudarles a alcanzar el máximo de su productividad en el proyecto.
 ✨🌞 ¡Tu bienestar es nuestra prioridad! ⚒️👍
@@ -952,7 +1180,7 @@ Por favor, confirma que has recibido la invitación respondiendo "Confirmado" o 
       } catch (error) {
         logger.error('Error al crear cita:', error);
         
-        const response = `Lo siento, tuve un problema al agendar la reunión. ¿Podrías confirmarme nuevamente tu disponibilidad para ${prospectState.selectedTime}?`;
+        const response = `Lo siento, tuve un problema al agendar la reunión. ¿Podrías confirmarme nuevamente tu disponibilidad?`;
         
         return {
           response,
